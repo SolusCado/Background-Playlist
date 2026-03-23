@@ -1,0 +1,24 @@
+{
+  "config": {
+    "step": {
+      "user": {
+        "title": "YouTube Background",
+        "description": "YouTube Background sets YouTube playlists as backgrounds for your Lovelace dashboards based on Home Assistant entity states.\n\n**Optional API key**\n\nYou can provide a **YouTube Data API v3** key to enable playlist search by name and playlist validation in the configuration panel.\n\nIf you leave it blank, the integration still works — users can paste a YouTube playlist URL or playlist ID manually.\n\n**Get an API key**\n\n1. Open Google Cloud API Library: https://console.cloud.google.com/apis/library/youtube.googleapis.com\n2. Create or select a Google Cloud project\n3. Enable **YouTube Data API v3**\n4. Go to **APIs & Services > Credentials**\n5. Create an **API key** and paste it here\n\nAfter setup, go to **Settings > YouTube Background** to create dashboard mappings.",
+        "data": {
+          "youtube_api_key": "YouTube Data API key (optional)"
+        }
+      }
+    }
+  },
+  "options": {
+    "step": {
+      "init": {
+        "title": "YouTube API Settings",
+        "description": "This API key is optional. Add a YouTube Data API v3 key to search playlists by name and validate playlist links. Without it, you can still paste playlist URLs or playlist IDs manually.",
+        "data": {
+          "youtube_api_key": "YouTube Data API key"
+        }
+      }
+    }
+  }
+}

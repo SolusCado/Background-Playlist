@@ -1,0 +1,10 @@
+{
+  "name": "YouTube Background",
+  "filename": "youtube_background.zip",
+  "hide_default_branch": true,
+  "hacs": "1.6.0",
+  "homeassistant": "2023.1.0",
+  "zip_release": true,
+  "persistent_directory": "custom_components/youtube_background",
+  "categories": ["integration"]
+}
