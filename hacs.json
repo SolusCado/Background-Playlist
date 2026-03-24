@@ -6,5 +6,6 @@
   "homeassistant": "2023.1.0",
   "zip_release": true,
   "persistent_directory": "custom_components/youtube_background",
-  "categories": ["integration"]
+  "categories": ["integration"],
+  "iconurl": "https://raw.githubusercontent.com/SolusCado/Background-Playlist/main/icon.png"
 }
