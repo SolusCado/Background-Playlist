@@ -18,6 +18,14 @@ class YouTubeBackgroundPanel extends HTMLElement {
       overlayGradient: "none",
       transition: "fade",
     };
+    this._previewMode = "yt-api";
+  }
+
+  _isSafariBrowser() {
+    const ua = navigator.userAgent || "";
+    const isSafari = /Safari/i.test(ua);
+    const isChromiumFamily = /Chrome|Chromium|CriOS|Edg|OPR|SamsungBrowser|Firefox|FxiOS/i.test(ua);
+    return isSafari && !isChromiumFamily;
   }
 
   set hass(value) {
@@ -651,6 +659,48 @@ class YouTubeBackgroundPanel extends HTMLElement {
       try { this._previewPlayer.destroy(); } catch (_) {}
       this._previewPlayer = null;
     }
+
+    const target = this.shadowRoot?.querySelector("#yt-preview-target");
+    if (target) {
+      target.innerHTML = "";
+    }
+
+    this._previewMode = "yt-api";
+  }
+
+  _mountPreviewIframeFallback(target, playlistId, autoplay, mute) {
+    target.innerHTML = "";
+
+    const params = new URLSearchParams({
+      list: playlistId,
+      autoplay: autoplay ? "1" : "0",
+      mute: mute ? "1" : "0",
+      controls: "1",
+      rel: "0",
+      modestbranding: "1",
+      playsinline: "1",
+      enablejsapi: "1",
+    });
+
+    const iframe = document.createElement("iframe");
+    iframe.src = `https://www.youtube.com/embed/videoseries?${params.toString()}`;
+    iframe.allow = "autoplay; encrypted-media; picture-in-picture; fullscreen";
+    iframe.setAttribute("allowfullscreen", "");
+    iframe.setAttribute("webkit-playsinline", "true");
+    iframe.setAttribute("playsinline", "1");
+    iframe.style.width = "100%";
+    iframe.style.height = "100%";
+    iframe.style.border = "0";
+
+    target.appendChild(iframe);
+    this._previewMode = "iframe-fallback";
+    this._previewPlayer = null;
+
+    console.info("[YouTube Background] Preview fallback active", {
+      mode: this._previewMode,
+      playlistId,
+      safari: this._isSafariBrowser(),
+    });
   }
 
   _scheduleInitialShuffle(player, playlistId, autoplay, randomize) {
@@ -760,7 +810,13 @@ class YouTubeBackgroundPanel extends HTMLElement {
     if (!target) return;
 
     const { playlistId, autoplay, mute, randomize } = this._preview;
+    const safari = this._isSafariBrowser();
     const origin = window.location.origin || undefined;
+
+    if (safari) {
+      this._mountPreviewIframeFallback(target, playlistId, autoplay, mute);
+      return;
+    }
 
     const createPlayer = () => {
       this._previewPlayer = new YT.Player(target, {
@@ -796,6 +852,12 @@ class YouTubeBackgroundPanel extends HTMLElement {
             }
             // Install gesture handlers after player is ready
             this._installPreviewGestureHandlers(target);
+          },
+          onError: (event) => {
+            console.warn("[YouTube Background] Preview YT API error", {
+              code: event?.data,
+              playlistId,
+            });
           },
         },
       });
