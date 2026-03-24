@@ -1,5 +1,5 @@
 {
-  "domain": "youtube_background",
+  "domain": "youtube",
   "name": "YouTube Background",
   "codeowners": ["@SolusCado"],
   "config_flow": true,
