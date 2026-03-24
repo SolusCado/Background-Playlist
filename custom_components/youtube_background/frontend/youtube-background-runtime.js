@@ -143,10 +143,12 @@
   let lastTemplateName = null;
   let currentConfig = null;
   let lastResolvedState = null;
+  let currentConfigSignature = "null";
   let gestureHandlersInstalled = false;
   let lastActivationAt = 0;
   let safariGestureUnlocked = false;
   let pendingGesturePlayback = false;
+  let safariPlaylistRetryCount = 0;
 
   function isSafariBrowser() {
     const ua = navigator.userAgent || "";
@@ -162,6 +164,113 @@
     iframe.setAttribute("playsinline", "1");
     iframe.setAttribute("webkit-playsinline", "true");
     iframe.setAttribute("allow", "autoplay; encrypted-media; picture-in-picture");
+  }
+
+  function getPlaylistStartIndex(behavior = getBehavior()) {
+    return behavior.randomize ? Math.floor(Math.random() * 50) : 0;
+  }
+
+  function loadPlaylistForPlayer(player, playlistId, behavior = getBehavior(), options = {}) {
+    if (!player || typeof player.loadPlaylist !== "function" || typeof player.cuePlaylist !== "function") {
+      return;
+    }
+
+    const useCue = Boolean(options.forceCue) || !behavior.autoplay;
+    const loader = useCue ? "cuePlaylist" : "loadPlaylist";
+    const index = Number.isInteger(options.index) ? options.index : getPlaylistStartIndex(behavior);
+
+    player[loader]({
+      list: playlistId,
+      listType: "playlist",
+      index,
+      suggestedQuality: "highres"
+    });
+  }
+
+  function getPlayerVarsForInit(behavior, isSafari, origin, widgetReferrer) {
+    if (isSafari) {
+      return {
+        autoplay: 0,
+        controls: 0,
+        modestbranding: 1,
+        rel: 0,
+        fs: 1,
+        mute: 1,
+        playsinline: 1,
+      };
+    }
+
+    return {
+      autoplay: behavior.autoplay ? 1 : 0,
+      controls: 0,
+      modestbranding: 1,
+      rel: 0,
+      fs: 1,
+      mute: behavior.mute ? 1 : 0,
+      playsinline: 1,
+      enablejsapi: 1,
+      origin,
+      widget_referrer: widgetReferrer,
+    };
+  }
+
+  function stableSerialize(value) {
+    if (Array.isArray(value)) {
+      return `[${value.map((item) => stableSerialize(item)).join(",")}]`;
+    }
+
+    if (value && typeof value === "object") {
+      return `{${Object.keys(value)
+        .sort()
+        .map((key) => `${JSON.stringify(key)}:${stableSerialize(value[key])}`)
+        .join(",")}}`;
+    }
+
+    return JSON.stringify(value);
+  }
+
+  function getConfigSignature(config) {
+    if (!config) {
+      return "null";
+    }
+
+    return stableSerialize({
+      entity_id: config.entity_id ?? null,
+      default_playlist_id: config.default_playlist_id ?? null,
+      state_map: config.state_map ?? {},
+      mute: config.mute ?? null,
+      autoplay: config.autoplay ?? null,
+      randomize: config.randomize ?? null,
+      transition: config.transition ?? null,
+      debug: config.debug ?? null,
+      fade_color: config.fade_color ?? null,
+      fade_opacity: config.fade_opacity ?? null,
+      fade_corners: Array.isArray(config.fade_corners) ? [...config.fade_corners].sort() : [],
+    });
+  }
+
+  function installLifecycleDiagnostics() {
+    if (window.__ytbgLifecycleDiagnosticsInstalled) {
+      return;
+    }
+    window.__ytbgLifecycleDiagnosticsInstalled = true;
+
+    const logLifecycle = (eventName, extra = {}) => {
+      console.warn("[YouTube Background] Page lifecycle", {
+        event: eventName,
+        href: window.location.href,
+        visibilityState: document.visibilityState,
+        playlistId: window.IDEAS?.yt?.currentPlaylistId,
+        pendingGesturePlayback,
+        safari: isSafariBrowser(),
+        ...extra,
+      });
+    };
+
+    window.addEventListener("beforeunload", () => logLifecycle("beforeunload"), true);
+    window.addEventListener("pagehide", (event) => logLifecycle("pagehide", { persisted: event.persisted }), true);
+    document.addEventListener("visibilitychange", () => logLifecycle("visibilitychange"), true);
+    document.addEventListener("freeze", () => logLifecycle("freeze"), true);
   }
 
   function getLovelaceRoot() {
@@ -295,12 +404,22 @@
     playerEl.classList.toggle("visible", Boolean(visible));
   }
 
-  function attemptPlaybackFromGesture() {
+  function logGestureEvent(eventName, details = {}) {
+    console.info("[YouTube Background] Gesture event fired", {
+      event: eventName,
+      ts: Date.now(),
+      ...details,
+    });
+  }
+
+  function attemptPlaybackFromGesture(source = "unknown") {
+    logGestureEvent("attemptPlaybackFromGesture", { source });
     pendingGesturePlayback = true;
     safariGestureUnlocked = true;
 
     const player = window.IDEAS?.yt?.player;
     if (!player || typeof player.getPlayerState !== "function") {
+      console.info("[YouTube Background] Gesture playback: player unavailable", { source });
       log("No player detected");
       return;
     }
@@ -322,16 +441,19 @@
       }
 
       if (player.getPlayerState() !== YT.PlayerState.PLAYING) {
+        console.info("[YouTube Background] Gesture playback: playVideo()", { source });
         log("Start playback from user gesture");
         applyMuteSetting(player, gestureBehavior);
         player.playVideo();
         pendingGesturePlayback = false;
       } else if (typeof player.setPlaybackQuality === "function") {
+        console.info("[YouTube Background] Gesture playback: already playing", { source });
         player.setPlaybackQuality("highres");
         log("Request high-resolution playback");
         pendingGesturePlayback = false;
       }
     } catch (error) {
+      console.warn("[YouTube Background] Gesture playback failed", { source, error });
       log("Gesture playback failed", error);
     }
   }
@@ -352,8 +474,9 @@
     if (gestureHandlersInstalled) return;
     gestureHandlersInstalled = true;
 
-    const handleActivation = (supportsNativeDoubleClick = false) => {
-      attemptPlaybackFromGesture();
+    const handleActivation = (supportsNativeDoubleClick = false, source = "activation") => {
+      logGestureEvent(source, { supportsNativeDoubleClick });
+      attemptPlaybackFromGesture(source);
 
       const now = Date.now();
       const isDoubleActivation = now - lastActivationAt < 400;
@@ -365,27 +488,48 @@
     };
 
     const handleDoubleClick = () => {
-      attemptPlaybackFromGesture();
+      logGestureEvent("dblclick");
+      attemptPlaybackFromGesture("dblclick");
       toggleMuteFromGesture();
     };
 
     if (window.PointerEvent) {
-      window.addEventListener("pointerdown", () => handleActivation(true), true);
+      window.addEventListener("pointerdown", () => handleActivation(true, "pointerdown"), true);
     } else {
-      window.addEventListener("mousedown", () => handleActivation(true), true);
-      window.addEventListener("touchstart", () => handleActivation(false), { capture: true, passive: true });
+      window.addEventListener("mousedown", () => handleActivation(true, "mousedown"), true);
+      window.addEventListener("touchstart", () => handleActivation(false, "touchstart"), { capture: true, passive: true });
     }
-    window.addEventListener("click", () => handleActivation(true), true);
-    window.addEventListener("touchend", () => handleActivation(false), { capture: true, passive: true });
+    window.addEventListener("click", () => handleActivation(true, "click"), true);
+    window.addEventListener("touchend", () => handleActivation(false, "touchend"), { capture: true, passive: true });
     window.addEventListener("dblclick", handleDoubleClick, true);
     window.addEventListener("keydown", (event) => {
       if (event.key === "Enter" || event.key === " ") {
-        attemptPlaybackFromGesture();
+        logGestureEvent("keydown", { key: event.key });
+        attemptPlaybackFromGesture("keydown");
       }
       if (event.key.toLowerCase() === "m") {
+        logGestureEvent("keydown", { key: event.key });
         toggleMuteFromGesture();
       }
     }, true);
+
+    const body = document.body;
+    if (body) {
+      const bodyPointerFallback = () => {
+        logGestureEvent("body.pointerdown");
+        attemptPlaybackFromGesture("body.pointerdown");
+      };
+      const bodyTouchFallback = () => {
+        logGestureEvent("body.touchstart");
+        attemptPlaybackFromGesture("body.touchstart");
+      };
+
+      if (window.PointerEvent) {
+        body.addEventListener("pointerdown", bodyPointerFallback, { capture: true });
+      } else {
+        body.addEventListener("touchstart", bodyTouchFallback, { capture: true, passive: true });
+      }
+    }
   }
 
   function hidePlayer() {
@@ -520,48 +664,55 @@
     const onInitBehavior = getBehavior();
     const origin = window.location.origin || undefined;
     const widgetReferrer = window.location.href || undefined;
-    const playlistId = window.IDEAS?.yt?.currentPlaylistId;
+    const isSafari = isSafariBrowser();
     window.IDEAS.yt.player = new YT.Player("yt-Iframe", {
       height: "100%",
       width: "100%",
       host: "https://www.youtube.com",
-      playerVars: {
-        autoplay: onInitBehavior.autoplay ? 1 : 0,
-        controls: 0,
-        modestbranding: 1,
-        rel: 0,
-        fs: 1,
-        mute: onInitBehavior.mute ? 1 : 0,
-        playsinline: 1,
-        enablejsapi: 1,
-        origin,
-        widget_referrer: widgetReferrer,
-        // Pass list at construction time so Safari doesn't reject deferred loadPlaylist
-        ...(playlistId ? { list: playlistId, listType: "playlist" } : {})
-      },
+      playerVars: getPlayerVarsForInit(onInitBehavior, isSafari, origin, widgetReferrer),
       events: {
         onReady: function (event) {
           const currentId = window.IDEAS.yt.currentPlaylistId;
           const readyBehavior = getBehavior();
+          const startIndex = getPlaylistStartIndex(readyBehavior);
+          safariPlaylistRetryCount = 0;
           log(`Starting playlist ${currentId}`);
           ensureInlineIframeAttributes();
           setTimeout(ensureInlineIframeAttributes, 250);
           setTimeout(ensureInlineIframeAttributes, 1200);
 
-          const loader = readyBehavior.autoplay ? "loadPlaylist" : "cuePlaylist";
-          event.target[loader]({
-            list: currentId,
-            listType: "playlist",
-            index: 0,
-            suggestedQuality: "highres"
-          });
+          if (isSafari) {
+            console.info("[YouTube Background] Safari legacy onReady path", {
+              playlistId: currentId,
+              startIndex,
+            });
+            event.target.cuePlaylist({
+              list: currentId,
+              listType: "playlist",
+              index: startIndex,
+              suggestedQuality: "highres"
+            });
+          } else {
+            loadPlaylistForPlayer(event.target, currentId, readyBehavior, {
+              index: startIndex,
+              forceCue: false,
+            });
+          }
           if (typeof event.target.setShuffle === "function") {
             event.target.setShuffle(readyBehavior.randomize);
           }
           event.target.setPlaybackQuality("highres");
-          applyMuteSetting(event.target, readyBehavior);
+          if (isSafari) {
+            if (typeof event.target.mute === "function") {
+              event.target.mute();
+            }
+          } else {
+            applyMuteSetting(event.target, readyBehavior);
+          }
           if (readyBehavior.autoplay) {
-            if (readyBehavior.randomize) {
+            if (isSafari) {
+              event.target.playVideo();
+            } else if (readyBehavior.randomize) {
               scheduleInitialShuffle(event.target, currentId, readyBehavior);
             } else {
               event.target.playVideo();
@@ -584,6 +735,7 @@
         },
         onStateChange: function (event) {
           const stateBehavior = getBehavior();
+          const safari = isSafariBrowser();
           if (stateBehavior.debug) {
             console.log(Object.keys(YT.PlayerState).find(key => YT.PlayerState[key] === event.data));
           }
@@ -607,11 +759,12 @@
               hidePlayer();
             }
           } else if (event.data === YT.PlayerState.PAUSED) {
-            if (stateBehavior.autoplay && window.IDEAS.yt.isActive) {
+            if (!safari && stateBehavior.autoplay && window.IDEAS.yt.isActive) {
               log("Resuming from unexpected pause");
               event.target.playVideo();
             }
           } else if (
+            !safari &&
             stateBehavior.autoplay &&
             window.IDEAS.yt.isActive &&
             event.data !== YT.PlayerState.BUFFERING &&
@@ -626,11 +779,43 @@
           }
         },
         onError: function (event) {
+          const errorCode = Number(event?.data);
+          const behavior = getBehavior();
           console.warn("[YouTube Background] Player error", event?.data, {
             playlistId: window.IDEAS?.yt?.currentPlaylistId,
             href: window.location.href,
             safari: isSafariBrowser()
           });
+
+          if (
+            isSafariBrowser() &&
+            [101, 150, 153].includes(errorCode) &&
+            safariPlaylistRetryCount < 2 &&
+            window.IDEAS?.yt?.currentPlaylistId
+          ) {
+            safariPlaylistRetryCount += 1;
+            const retryIndex = getPlaylistStartIndex(behavior);
+            console.warn("[YouTube Background] Safari retry", {
+              attempt: safariPlaylistRetryCount,
+              retryIndex,
+              playlistId: window.IDEAS.yt.currentPlaylistId,
+            });
+
+            setTimeout(() => {
+              try {
+                loadPlaylistForPlayer(event.target, window.IDEAS.yt.currentPlaylistId, behavior, {
+                  index: retryIndex,
+                  forceCue: true,
+                });
+                applyMuteSetting(event.target, behavior);
+                if (behavior.autoplay) {
+                  event.target.playVideo();
+                }
+              } catch (error) {
+                console.warn("[YouTube Background] Safari retry failed", error);
+              }
+            }, 500);
+          }
         }
       }
     });
@@ -673,12 +858,9 @@
       window.IDEAS.yt.currentPlaylistId !== playlistId
     ) {
       log(`Switching to playlist ${playlistId}`);
-      const loader = behavior.autoplay ? "loadPlaylist" : "cuePlaylist";
-      window.IDEAS.yt.player[loader]({
-        list: playlistId,
-        listType: 'playlist',
-        index: 0,
-        suggestedQuality: 'highres'
+      loadPlaylistForPlayer(window.IDEAS.yt.player, playlistId, behavior, {
+        index: getPlaylistStartIndex(behavior),
+        forceCue: isSafariBrowser(),
       });
       if (typeof window.IDEAS.yt.player.setShuffle === "function") {
         window.IDEAS.yt.player.setShuffle(behavior.randomize);
@@ -760,6 +942,7 @@
       lastViewId = null;
       lastTemplateName = null;
       currentConfig = null;
+      currentConfigSignature = "null";
       lastResolvedState = null;
       hidePlayer();
       return;
@@ -774,14 +957,22 @@
     }
 
     const config = await getConfigForCurrentView();
-    const configChanged = JSON.stringify(config) !== JSON.stringify(currentConfig);
+    const nextConfigSignature = getConfigSignature(config);
+    const configChanged = nextConfigSignature !== currentConfigSignature;
     currentConfig = config;
+    currentConfigSignature = nextConfigSignature;
 
     const hass = getHass();
     const resolved = resolvePlaylistId(config, hass);
     const stateChanged = (resolved?.key || null) !== lastResolvedState;
 
     if (configChanged || stateChanged) {
+      console.info("[YouTube Background] Config refresh", {
+        configChanged,
+        stateChanged,
+        playlistId: resolved?.playlistId ?? null,
+        stateKey: resolved?.key ?? null,
+      });
       handleConfigChange(config);
     }
   }
@@ -791,9 +982,10 @@
       requestAnimationFrame(() => checkViewBackgroundConfig());
     });
 
+    const pollIntervalMs = isSafariBrowser() ? 15000 : 3000;
     setInterval(() => {
       checkViewBackgroundConfig();
-    }, 3000);
+    }, pollIntervalMs);
   }
 
   function waitForLovelace(timeout = 30000) {
@@ -804,6 +996,7 @@
     );
 
     // Start navigation watcher immediately — the 3s poll will activate once hass is ready
+  installLifecycleDiagnostics();
     watchNavigation();
 
     const start = performance.now();
