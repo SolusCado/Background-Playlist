@@ -55,7 +55,14 @@
 
   function applyMuteSetting(player, config = currentConfig) {
     if (!player?.mute || !player?.unMute) return;
-    if (getBehavior(config).mute) {
+    const behavior = getBehavior(config);
+
+    if (isSafariBrowser() && behavior.autoplay && !safariGestureUnlocked) {
+      player.mute();
+      return;
+    }
+
+    if (behavior.mute) {
       player.mute();
     } else {
       player.unMute();
@@ -138,6 +145,23 @@
   let lastResolvedState = null;
   let gestureHandlersInstalled = false;
   let lastActivationAt = 0;
+  let safariGestureUnlocked = false;
+
+  function isSafariBrowser() {
+    const ua = navigator.userAgent || "";
+    const isSafari = /Safari/i.test(ua);
+    const isChromiumFamily = /Chrome|Chromium|CriOS|Edg|OPR|SamsungBrowser|Firefox|FxiOS/i.test(ua);
+    return isSafari && !isChromiumFamily;
+  }
+
+  function ensureInlineIframeAttributes() {
+    const iframe = document.querySelector("#background-player iframe");
+    if (!iframe) return;
+
+    iframe.setAttribute("playsinline", "1");
+    iframe.setAttribute("webkit-playsinline", "true");
+    iframe.setAttribute("allow", "autoplay; encrypted-media; picture-in-picture");
+  }
 
   function getLovelaceRoot() {
     const ha = document.querySelector("home-assistant");
@@ -277,6 +301,7 @@
       return;
     }
 
+    safariGestureUnlocked = true;
     const gestureBehavior = getBehavior();
 
     try {
@@ -549,6 +574,9 @@
               const currentId = window.IDEAS.yt.currentPlaylistId;
               const readyBehavior = getBehavior();
               log(`Starting playlist ${currentId}`);
+              ensureInlineIframeAttributes();
+              setTimeout(ensureInlineIframeAttributes, 250);
+              setTimeout(ensureInlineIframeAttributes, 1200);
 
               const loader = readyBehavior.autoplay ? "loadPlaylist" : "cuePlaylist";
               event.target[loader]({
