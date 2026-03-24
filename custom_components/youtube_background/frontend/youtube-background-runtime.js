@@ -716,7 +716,7 @@
 
   function waitForLovelace(timeout = 30000) {
     console.info(
-      `%c YouTube Playlist Background %c v1.0.40 `,
+      `%c YouTube Playlist Background %c v1.0.54 `,
       'background: #555; color: white; border-radius: 999px 0 0 999px; padding: 2px 10px; font-weight: 500;',
       'background: #d9534f; color: white; border-radius: 0 999px 999px 0; padding: 2px 10px; font-weight: 500; margin-left: -4px;'
     );

@@ -57,7 +57,40 @@ class YouTubeBackgroundPanel extends HTMLElement {
   async _loadInitialData() {
     await Promise.all([this._loadMappings(), this._loadDashboards(), this._loadYouTubeApiStatus()]);
     this._entityOptions = Object.keys(this._hass?.states || {}).sort();
+    await this._hydrateMissingPlaylistTitles();
     this._render();
+  }
+
+  async _hydrateMissingPlaylistTitles() {
+    if (!this._youtubeApiConfigured) {
+      return;
+    }
+
+    for (const mapping of this._mappings) {
+      if (!mapping?.id || !mapping?.default_playlist_id || mapping?.default_playlist_title) {
+        continue;
+      }
+
+      try {
+        const response = await this._hass.callWS({
+          type: "youtube_background/resolve_playlist",
+          value: mapping.default_playlist_id,
+        });
+        const title = String(response?.playlist?.title || "").trim();
+        if (!title) {
+          continue;
+        }
+
+        mapping.default_playlist_title = title;
+        await this._hass.callWS({
+          type: "youtube_background/update_mapping",
+          mapping_id: mapping.id,
+          updates: { default_playlist_title: title },
+        });
+      } catch (error) {
+        console.warn("Could not hydrate playlist title", mapping?.default_playlist_id, error);
+      }
+    }
   }
 
   async _loadYouTubeApiStatus() {
@@ -93,6 +126,7 @@ class YouTubeBackgroundPanel extends HTMLElement {
         _playlistResolveBusy: false,
         _playlistResolvedTitle: "",
         _playlistResolvedDetails: "",
+        default_playlist_title: mapping.default_playlist_title || "",
       }));
     } catch (error) {
       console.error(error);
@@ -203,6 +237,7 @@ class YouTubeBackgroundPanel extends HTMLElement {
       view_path: "",
       entity_id: "",
       default_playlist_id: "",
+      default_playlist_title: "",
       state_map: {},
       mute: true,
       autoplay: true,
@@ -243,7 +278,13 @@ class YouTubeBackgroundPanel extends HTMLElement {
     this._stateSuggestions[mapping.id] = await this._extractStateSuggestions(mapping.entity_id);
     this._loadViewsForDashboard(mapping.dashboard_path);
 
-    if (this._youtubeApiConfigured && mapping.default_playlist_id && !mapping._playlistResolvedTitle && !mapping._playlistResolvedDetails) {
+    if (
+      this._youtubeApiConfigured &&
+      mapping.default_playlist_id &&
+      !mapping.default_playlist_title &&
+      !mapping._playlistResolvedTitle &&
+      !mapping._playlistResolvedDetails
+    ) {
       await this._resolvePlaylistField(mapping.id);
     }
 
@@ -268,6 +309,12 @@ class YouTubeBackgroundPanel extends HTMLElement {
     if (!mapping) {
       return;
     }
+
+    if (field === "_playlistSearchQuery") {
+      mapping[field] = value;
+      return;
+    }
+
     if (field === "fade_opacity") {
       const opacityValue = Number(String(value).replace(/[^0-9.]/g, ""));
       mapping[field] = Number.isFinite(opacityValue) ? Math.max(0, Math.min(100, opacityValue)) : 50;
@@ -285,6 +332,7 @@ class YouTubeBackgroundPanel extends HTMLElement {
     }
 
     if (field === "default_playlist_id") {
+      mapping.default_playlist_title = "";
       mapping._playlistResolvedTitle = "";
       mapping._playlistResolvedDetails = "";
       mapping._playlistResolveBusy = false;
@@ -398,6 +446,7 @@ class YouTubeBackgroundPanel extends HTMLElement {
       const playlist = response?.playlist || {};
       const resolvedId = playlist.id || rawValue;
       mapping[fieldName] = resolvedId;
+      mapping.default_playlist_title = playlist.title || "";
       mapping._playlistResolvedTitle = playlist.title || "";
       const detailParts = [];
       if (playlist.item_count != null) {
@@ -430,6 +479,7 @@ class YouTubeBackgroundPanel extends HTMLElement {
 
     const playlist = (mapping._playlistSearchResults || []).find((item) => item.id === playlistId);
     mapping.default_playlist_id = playlistId;
+    mapping.default_playlist_title = playlist?.title || "";
     mapping._playlistResolvedTitle = playlist?.title || "";
     const detailParts = [];
     if (playlist?.item_count != null) {
@@ -576,6 +626,26 @@ class YouTubeBackgroundPanel extends HTMLElement {
     this._mountPreviewPlayer();
   }
 
+  _openPlaylistPreview(playlistId, playlistTitle) {
+    // Destroy any existing preview player first
+    this._destroyPreviewPlayer();
+
+    this._preview = {
+      open: true,
+      playlistId,
+      playlistTitle,
+      autoplay: true,
+      mute: false,
+      randomize: false,
+      overlayGradient: "",
+      transition: "fade",
+    };
+    this._error = "";
+    this._render();
+    // Mount the IFrame API player after the DOM node exists
+    this._mountPreviewPlayer();
+  }
+
   _destroyPreviewPlayer() {
     if (this._previewPlayer) {
       try { this._previewPlayer.destroy(); } catch (_) {}
@@ -675,6 +745,14 @@ class YouTubeBackgroundPanel extends HTMLElement {
         toggleMuteFromGesture();
       }
     }, true);
+
+    // Auto-trigger playback after a short delay to work around browser autoplay restrictions
+    // This is especially helpful for preview mode where autoplay may be blocked
+    setTimeout(() => {
+      if (this._previewPlayer && this._preview.open) {
+        attemptPlaybackFromGesture();
+      }
+    }, 500);
   }
 
   _mountPreviewPlayer() {
@@ -783,6 +861,7 @@ class YouTubeBackgroundPanel extends HTMLElement {
       view_path: (mapping.view_path || "").trim(),
       entity_id: (mapping.entity_id || "").trim(),
       default_playlist_id: (mapping.default_playlist_id || "").trim(),
+      default_playlist_title: (mapping.default_playlist_title || "").trim(),
       state_map: mapping.state_map || {},
       mute: this._toBoolean(mapping.mute, true),
       autoplay: this._toBoolean(mapping.autoplay, true),
@@ -886,6 +965,14 @@ class YouTubeBackgroundPanel extends HTMLElement {
         if (action === "search-playlists") await this._searchPlaylists(mappingId);
         if (action === "resolve-playlist") await this._resolvePlaylistField(mappingId);
         if (action === "use-playlist") await this._applyPlaylistSearchResult(mappingId, playlistId);
+        if (action === "preview-playlist") this._openPlaylistPreview(playlistId, event.currentTarget.dataset.playlistTitle);
+        if (action === "toggle-transition") {
+          const mapping = this._mappings.find((item) => item.id === mappingId);
+          if (mapping) {
+            mapping.transition = mapping.transition === "none" ? "fade" : "none";
+            this._render();
+          }
+        }
         if (action === "clear-entity") this._clearEntity(mappingId);
         if (action === "preview") this._openPreview(mappingId);
         if (action === "close-preview") this._closePreview();
@@ -911,14 +998,47 @@ class YouTubeBackgroundPanel extends HTMLElement {
         }
         const mappingId = event.currentTarget.dataset.mappingId;
         const field = event.currentTarget.dataset.field;
-        if (field === "fade_opacity") {
+        if (field === "_playlistSearchQuery") {
+          const mapping = this._mappings.find((item) => item.id === mappingId);
+          if (mapping) {
+            mapping._playlistSearchQuery = event.currentTarget.value;
+          }
           return;
         }
-        const value = event.currentTarget.type === "checkbox"
-          ? event.currentTarget.checked
-          : event.currentTarget.value;
-        await this._updateField(mappingId, field, value);
+        if (field === "fade_opacity") {
+            // Only update in-memory, don't re-render
+            const mapping = this._mappings.find((item) => item.id === mappingId);
+            if (mapping) {
+              mapping.fade_opacity = event.currentTarget.value;
+            }
+            return;
+        }
+          // For all other fields, just update in-memory without re-rendering
+          const mapping = this._mappings.find((item) => item.id === mappingId);
+          if (mapping) {
+            const value = event.currentTarget.type === "checkbox"
+              ? event.currentTarget.checked
+              : event.currentTarget.value;
+            // Deep assignment for nested fields like "state_map.someState"
+            if (field.includes(".")) {
+              const [parent, child] = field.split(".");
+              if (!mapping[parent]) mapping[parent] = {};
+              mapping[parent][child] = value;
+            } else {
+              mapping[field] = value;
+            }
+          }
       });
+
+      if (input.dataset.field === "_playlistSearchQuery") {
+        input.addEventListener("keydown", async (event) => {
+          if (event.key !== "Enter") {
+            return;
+          }
+          event.preventDefault();
+          await this._searchPlaylists(event.currentTarget.dataset.mappingId);
+        });
+      }
     });
 
     this._initializeEntitySelectors();
@@ -976,27 +1096,44 @@ class YouTubeBackgroundPanel extends HTMLElement {
     const hasDashboard = Boolean(mapping.dashboard_path);
     const hasEntity = Boolean(String(mapping.entity_id || "").trim());
     const searchResults = mapping._playlistSearchResults || [];
+    const matchedDashboard = this._dashboards.find((dashboard) => dashboard.path === mapping.dashboard_path);
+    const dashboardDisplayTitle = matchedDashboard?.title || mapping.dashboard_path || "(no dashboard)";
+    const defaultPlaylistDisplay = mapping.default_playlist_title || mapping.default_playlist_id || "-";
+    const entityId = (mapping.entity_id || "").trim();
+    const currentEntityState = hasEntity ? String(this._hass?.states?.[entityId]?.state ?? "").trim() : "";
+    const escapedCurrentEntityState = currentEntityState ? this._escapeHtml(currentEntityState) : "";
+    const currentStateSuffix = escapedCurrentEntityState ? ` <span class="current-state-value">(${escapedCurrentEntityState})</span>` : "";
+    const stateEntitySummary = hasEntity
+      ? `<em>${stateRows.length}</em> State Mappings for <strong>${this._escapeHtml(entityId)}</strong>${currentStateSuffix}`
+      : "";
 
     if (!mapping._isEditing) {
       return `
         <div class="card">
           <div class="header-row">
-            <div>
-              <h3>${mapping.dashboard_path || "(no dashboard)"}${mapping.view_path ? ` / ${mapping.view_path}` : ""}</h3>
-              <div class="meta">Entity: ${mapping.entity_id || "-"}</div>
+            <div class="header-left">
+              <div class="enabled-toggle-section">
+                <button class="toggle ${mapping.enabled !== false ? "on" : "off"}" data-toggle-field="enabled" data-mapping-id="${mapping.id}" type="button" role="switch" aria-checked="${mapping.enabled !== false}" aria-label="Enabled"></button>
+              </div>
+              <div>
+                <h3>${dashboardDisplayTitle}${mapping.view_path ? ` / ${mapping.view_path}` : ""}</h3>
+                <div class="meta">${this._escapeHtml(defaultPlaylistDisplay)}</div>
+              </div>
             </div>
             <div class="actions">
-              <button data-action="edit" data-mapping-id="${mapping.id}">Edit</button>
-              <button class="danger" data-action="delete" data-mapping-id="${mapping.id}">Delete</button>
+              <div class="action-buttons">
+                <button data-action="edit" data-mapping-id="${mapping.id}">Edit</button>
+                <button class="danger" data-action="delete" data-mapping-id="${mapping.id}">Delete</button>
+              </div>
             </div>
           </div>
           <div class="summary-grid">
-            <div><strong>Default Playlist:</strong> ${mapping.default_playlist_id || "-"}</div>
-            <div><strong>Enabled:</strong> ${mapping.enabled ? "Yes" : "No"}</div>
-              <div><strong>Autoplay:</strong> ${mapping.autoplay !== false ? "Yes" : "No"}</div>
-              <div><strong>Muted:</strong> ${mapping.mute !== false ? "Yes" : "No"}</div>
-              <div><strong>Transition:</strong> ${mapping.transition || "fade"}</div>
-            <div><strong>State Rules:</strong> ${stateRows.length}</div>
+            <div class="state-entity-summary">${stateEntitySummary}</div>
+            <div class="status-icons-summary">
+              <span class="status-icon ${mapping.autoplay !== false ? "active" : "inactive"}" title="Autoplay: ${mapping.autoplay !== false ? "On" : "Off"}">▶</span>
+              <span class="status-icon ${mapping.transition === "none" ? "inactive" : "active"}" title="Transition: ${mapping.transition || "fade"}">◐</span>
+              <span class="status-icon audio" title="Muted: ${mapping.mute !== false ? "Yes" : "No"}">${mapping.mute !== false ? "🔇" : "🔊"}</span>
+            </div>
           </div>
         </div>
       `;
@@ -1045,14 +1182,19 @@ class YouTubeBackgroundPanel extends HTMLElement {
             <label>Default Playlist</label>
             <div>
               <div class="playlist-input-row">
+                <a class="primary-button" href="https://www.youtube.com/@BaileyPoint/playlists" target="_blank" rel="noopener noreferrer">Browse Curated Playlists</a>
                 <input type="text" value="${mapping.default_playlist_id || ""}" data-field="default_playlist_id" data-mapping-id="${mapping.id}" placeholder="Playlist URL or ID" />
                 <button type="button" data-action="resolve-playlist" data-mapping-id="${mapping.id}" ${mapping._playlistResolveBusy ? "disabled" : ""}>${mapping._playlistResolveBusy ? "Validating…" : "Validate"}</button>
+                <div class="playlist-inline-status">
+                  ${(mapping._playlistResolvedTitle || mapping._playlistResolvedDetails) ? `
+                    ${mapping._playlistResolvedTitle ? `<div class="field-note playlist-resolved-title">✓ ${this._escapeHtml(mapping._playlistResolvedTitle)}</div>` : ""}
+                    ${mapping._playlistResolvedDetails ? `<div class="field-note playlist-resolved-details">${this._escapeHtml(mapping._playlistResolvedDetails)}</div>` : ""}
+                  ` : `<div class="field-note playlist-status-placeholder">No playlist loaded</div>`}
+                </div>
               </div>
-              ${mapping._playlistResolvedTitle ? `<div class="field-note playlist-resolved-title">✓ ${this._escapeHtml(mapping._playlistResolvedTitle)}</div>` : ""}
-              ${mapping._playlistResolvedDetails ? `<div class="field-note playlist-resolved-details">${this._escapeHtml(mapping._playlistResolvedDetails)}</div>` : ""}
               ${this._youtubeApiConfigured ? `
                 <div class="playlist-search-row">
-                  <input type="text" value="${mapping._playlistSearchQuery || ""}" data-field="_playlistSearchQuery" data-mapping-id="${mapping.id}" placeholder="Search YouTube playlists" />
+                  <input type="text" value="${mapping._playlistSearchQuery || ""}" data-field="_playlistSearchQuery" data-mapping-id="${mapping.id}" placeholder="Search all YouTube playlists" />
                   <button type="button" data-action="search-playlists" data-mapping-id="${mapping.id}" ${mapping._playlistSearchBusy ? "disabled" : ""}>${mapping._playlistSearchBusy ? "Searching..." : "Search"}</button>
                 </div>
                 ${searchResults.length ? `
@@ -1061,11 +1203,15 @@ class YouTubeBackgroundPanel extends HTMLElement {
                       .map(
                         (item) => `
                           <div class="playlist-result-item">
-                            <div>
+                            ${item.thumbnail_url ? `<img src="${item.thumbnail_url}" alt="${this._escapeHtml(item.title)}" class="playlist-result-thumbnail" />` : `<div class="playlist-result-thumbnail-placeholder"></div>`}
+                            <div class="playlist-result-content">
                               <div class="playlist-result-title">${this._escapeHtml(item.title)}</div>
                               <div class="playlist-result-meta">${this._escapeHtml(item.channel_title || "")}${item.item_count != null ? ` • ${item.item_count} items` : ""}</div>
                             </div>
-                            <button type="button" data-action="use-playlist" data-mapping-id="${mapping.id}" data-playlist-id="${item.id}">Use</button>
+                            <div class="playlist-result-actions">
+                              <button type="button" class="preview-button" data-action="preview-playlist" data-playlist-id="${item.id}" data-playlist-title="${this._escapeHtml(item.title)}" title="Preview playlist">▶</button>
+                              <button type="button" data-action="use-playlist" data-mapping-id="${mapping.id}" data-playlist-id="${item.id}">Use</button>
+                            </div>
                           </div>
                         `
                       )
@@ -1073,7 +1219,6 @@ class YouTubeBackgroundPanel extends HTMLElement {
                   </div>
                 ` : ""}
               ` : `<div class="field-note">Add a YouTube Data API key in the integration options to search playlists by name.</div>`}
-              <div class="field-note">Browse playlists: <a class="playlist-link" href="https://www.youtube.com/@BaileyPoint/playlists" target="_blank" rel="noopener noreferrer">youtube.com/@BaileyPoint/playlists</a></div>
               ${mapping._playlistSearchError ? `<div class="error small-error">${this._escapeHtml(mapping._playlistSearchError)}</div>` : ""}
             </div>
 
@@ -1091,13 +1236,11 @@ class YouTubeBackgroundPanel extends HTMLElement {
                 <button class="toggle ${mapping.randomize !== false ? "on" : "off"}" data-toggle-field="randomize" data-mapping-id="${mapping.id}" type="button" role="switch" aria-checked="${mapping.randomize !== false}" aria-label="Shuffle Playlist"></button>
                 <span>Shuffle Playlist</span>
               </div>
+              <div class="toggle-option">
+                <button class="toggle ${mapping.transition !== "none" ? "on" : "off"}" data-action="toggle-transition" data-mapping-id="${mapping.id}" type="button" role="switch" aria-checked="${mapping.transition !== "none"}" aria-label="Fade Transition"></button>
+                <span>Fade Transition</span>
+              </div>
             </div>
-
-            <label>Transition</label>
-            <select data-field="transition" data-mapping-id="${mapping.id}">
-              <option value="fade" ${!mapping.transition || mapping.transition === "fade" ? "selected" : ""}>Fade</option>
-              <option value="none" ${mapping.transition === "none" ? "selected" : ""}>None</option>
-            </select>
 
             <label>Faded Corners</label>
             <div>
@@ -1136,29 +1279,29 @@ class YouTubeBackgroundPanel extends HTMLElement {
         </div>
 
         <div class="state-section ${hasDashboard && hasEntity ? "" : "hidden"}">
-          <h4>State → Playlist Mappings</h4>
-          ${knownStates.length ? `<div class="known-states">${knownStates.length === 1 ? "Current State" : "Known States"}: ${knownStates.join(", ")}</div>` : ""}
+          <h4>State → Playlist Mappings${currentStateSuffix}</h4>
+          ${knownStates.length ? `
+            <div class="state-rows-container">
+              ${knownStates
+                .map(
+                  (state) => `
+                    <div class="state-mapping-row">
+                      <div class="state-label">${state}</div>
+                      <input type="text" value="${(mapping.state_map || {})[state] || ""}" data-field="state_map.${state}" data-mapping-id="${mapping.id}" placeholder="Playlist URL or ID" />
+                      <button type="button" class="remove-state-btn" data-action="remove-state" data-state-key="${state}" data-mapping-id="${mapping.id}">Remove</button>
+                    </div>
+                  `
+                )
+                .join("")}
+            </div>
+          ` : `
+            <div class="field-note">Select an entity to see available states.</div>
+          `}
           <div class="state-add-row">
-            <input type="text" value="${mapping._newStateKey || ""}" data-field="_newStateKey" data-mapping-id="${mapping.id}" placeholder="state (e.g. sunny)" />
-            <input type="text" value="${mapping._newStatePlaylist || ""}" data-field="_newStatePlaylist" data-mapping-id="${mapping.id}" placeholder="playlist URL or ID" />
+            <input type="text" class="custom-state-key-input" value="${mapping._newStateKey || ""}" data-field="_newStateKey" data-mapping-id="${mapping.id}" placeholder="add custom state" />
+            <input type="text" value="${mapping._newStatePlaylist || ""}" data-field="_newStatePlaylist" data-mapping-id="${mapping.id}" placeholder="Playlist URL or ID" />
             <button data-action="add-state" data-mapping-id="${mapping.id}">Add</button>
           </div>
-
-          <table>
-            <thead><tr><th>State</th><th>Playlist ID</th><th></th></tr></thead>
-            <tbody>
-              ${stateRows
-                .map(
-                  ([stateKey, playlistId]) => `
-                    <tr>
-                      <td>${stateKey}</td>
-                      <td>${playlistId}</td>
-                      <td><button class="danger" data-action="remove-state" data-state-key="${stateKey}" data-mapping-id="${mapping.id}">Remove</button></td>
-                    </tr>`
-                )
-                .join("") || `<tr><td colspan="3" class="muted">No state rules yet.</td></tr>`}
-            </tbody>
-          </table>
         </div>
 
         <div class="form-actions">
@@ -1182,13 +1325,24 @@ class YouTubeBackgroundPanel extends HTMLElement {
         .toolbar button { padding: 8px 12px; border-radius: 8px; border: 1px solid var(--divider-color); cursor: pointer; }
         .card { border: 1px solid var(--divider-color); border-radius: 12px; padding: 12px; margin-bottom: 12px; background: var(--card-background-color); }
         .editing { border-color: var(--primary-color); }
-        .header-row { display:flex; justify-content:space-between; gap:12px; align-items:flex-start; }
+        .header-row { display:flex; justify-content:space-between; gap:12px; align-items:center; }
+        .header-left { display:flex; gap:12px; align-items:center; flex:1; }
+        .enabled-toggle-section { flex-shrink:0; }
         .header-row h3 { margin:0; }
-        .actions { display:flex; gap:8px; }
+        .actions { display:flex; flex-direction:column; gap:6px; align-items:flex-end; justify-content:center; flex-shrink:0; }
+        .action-buttons { display:flex; gap:8px; align-items:center; justify-content:flex-end; }
+        .status-icons { display:flex; gap:10px; align-items:center; justify-content:flex-end; min-height: 22px; }
+        .status-icon { display:inline-flex; width:22px; height:22px; align-items:center; justify-content:center; cursor:default; opacity:0.45; transition:opacity 0.2s; font-size:20px; line-height:1; }
+        .status-icon.active { opacity:1; color:var(--success-color, #4caf50); }
+        .status-icon.audio { opacity:1; color:var(--primary-text-color); }
         button { background: transparent; color: var(--primary-text-color); border: 1px solid var(--divider-color); border-radius: 8px; padding: 6px 10px; cursor: pointer; }
         button.primary { background: var(--primary-color); color: var(--text-primary-color); border-color: var(--primary-color); }
         button.danger { border-color: var(--error-color); color: var(--error-color); }
-        .summary-grid { margin-top: 10px; display:grid; gap:8px; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); }
+        .primary-button { display:inline-flex; align-items:center; justify-content:center; text-decoration:none; background: var(--primary-color); color: var(--text-primary-color); border: 1px solid var(--primary-color); border-radius: 8px; padding: 6px 10px; cursor: pointer; }
+        .summary-grid { margin-top: 30px; display:grid; gap:8px; grid-template-columns: 1fr auto; align-items:center; }
+        .state-entity-summary { min-width: 0; }
+        .current-state-value { font-weight: 400; color: var(--secondary-text-color); }
+        .status-icons-summary { display:flex; gap:10px; align-items:center; justify-content:flex-end; }
         .form-grid { margin-top: 12px; display:grid; grid-template-columns: 160px 1fr; gap:10px; align-items:start; }
         .form-grid input[type='text'], .form-grid select { width: 100%; box-sizing: border-box; padding: 8px; border-radius: 8px; border: 1px solid var(--divider-color); background: var(--secondary-background-color); color: var(--primary-text-color); margin-bottom: 6px; }
         .form-grid .entity-selector-host { display: block; width: 100%; margin-bottom: 6px; }
@@ -1196,13 +1350,29 @@ class YouTubeBackgroundPanel extends HTMLElement {
         .field-note { color: var(--secondary-text-color); font-size: 0.9rem; }
         .field-note.playlist-resolved-title { color: var(--success-color, #4caf50); font-weight: 600; }
         .field-note.playlist-resolved-details { color: var(--secondary-text-color); font-size: 0.85rem; }
-        .playlist-input-row, .playlist-search-row { display:grid; grid-template-columns: 1fr auto; gap:8px; margin-bottom: 6px; }
+        .playlist-input-row { display:grid; grid-template-columns: auto minmax(0, 1fr) auto auto; gap:8px; margin-bottom: 6px; align-items: center; }
+        .playlist-input-row input[type='text'] { margin-bottom: 0; align-self: center; }
+        .playlist-input-row button,
+        .playlist-input-row .primary-button,
+        .playlist-input-row .playlist-inline-status { margin-bottom: 0; align-self: center; }
+        .playlist-inline-status { display:flex; flex-direction:column; gap:2px; align-items: flex-end; justify-content: center; min-height: 36px; }
+        .playlist-inline-status .field-note,
+        .playlist-inline-status .playlist-status-placeholder { margin: 0; }
+        .playlist-status-placeholder { color: var(--secondary-text-color); font-style: italic; font-size: 0.9rem; }
+        .playlist-search-row { display:grid; grid-template-columns: 1fr auto; gap:8px; margin-bottom: 6px; }
         .playlist-results { border: 1px solid var(--divider-color); border-radius: 8px; overflow: hidden; margin-bottom: 6px; }
-        .playlist-result-item { display:flex; justify-content:space-between; align-items:center; gap:12px; padding: 10px; border-bottom: 1px solid var(--divider-color); }
+        .playlist-result-item { display:grid; grid-template-columns: 100px 1fr auto; gap:12px; padding: 10px; border-bottom: 1px solid var(--divider-color); align-items: center; }
         .playlist-result-item:last-child { border-bottom: none; }
-        .playlist-result-title { font-weight: 600; }
-        .playlist-result-meta { color: var(--secondary-text-color); font-size: 0.9rem; }
+        .playlist-result-thumbnail { width: 100px; height: 60px; object-fit: cover; border-radius: 4px; flex-shrink: 0; }
+        .playlist-result-thumbnail-placeholder { width: 100px; height: 60px; background: var(--divider-color); border-radius: 4px; flex-shrink: 0; }
+        .playlist-result-content { display: flex; flex-direction: column; gap: 4px; min-width: 0; }
+        .playlist-result-title { font-weight: 600; overflow: hidden; text-overflow: ellipsis; display: -webkit-box; -webkit-line-clamp: 1; -webkit-box-orient: vertical; }
+        .playlist-result-meta { color: var(--secondary-text-color); font-size: 0.9rem; overflow: hidden; text-overflow: ellipsis; display: -webkit-box; -webkit-line-clamp: 1; -webkit-box-orient: vertical; }
+        .playlist-result-actions { display: flex; gap: 6px; flex-shrink: 0; }
+        .preview-button { padding: 6px 8px; border: 1px solid var(--divider-color); background: transparent; color: var(--primary-text-color); border-radius: 4px; cursor: pointer; font-weight: 500; min-width: 36px; }
         .playlist-link { color: var(--primary-color); text-decoration: underline; }
+        .secondary-button { display:inline-flex; align-items:center; justify-content:center; text-decoration:none; background: transparent; color: var(--primary-text-color); border: 1px solid var(--divider-color); border-radius: 8px; padding: 6px 10px; cursor: pointer; }
+        .playlist-link-button { color: var(--primary-text-color); text-decoration: none; }
         .secondary-action { margin-top: 6px; }
         .preview-row { margin-top: 8px; }
         .inline-toggle-row { display: flex; align-items: center; gap: 10px; }
@@ -1219,8 +1389,14 @@ class YouTubeBackgroundPanel extends HTMLElement {
         .fade-opacity-suffix { color: var(--secondary-text-color); }
         .state-section { margin-top: 14px; }
         .hidden { display: none; }
-        .known-states { color: var(--secondary-text-color); margin-bottom: 8px; }
-        .state-add-row { display:grid; grid-template-columns: 1fr 2fr auto; gap:8px; margin-bottom: 10px; }
+        .state-rows-container { display: flex; flex-direction: column; gap: 8px; margin-bottom: 12px; }
+        .state-mapping-row { display: grid; grid-template-columns: 160px minmax(0, 1fr) auto; gap: 10px; align-items: center; }
+        .state-label { font-weight: 400; white-space: nowrap; min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+        .remove-state-btn { padding: 6px 10px; }
+        .state-add-row { display:grid; grid-template-columns: 160px minmax(0, 1fr) auto; gap:10px; margin-bottom: 10px; }
+        .state-add-row .custom-state-key-input { background: transparent; border: 1px solid transparent; color: var(--primary-text-color); }
+        .state-add-row .custom-state-key-input::placeholder { color: var(--secondary-text-color); }
+        .state-add-row .custom-state-key-input:focus { outline: none; border-color: transparent; box-shadow: none; }
         table { width:100%; border-collapse: collapse; }
         th, td { border-bottom: 1px solid var(--divider-color); text-align:left; padding: 8px; }
         .muted { color: var(--secondary-text-color); }

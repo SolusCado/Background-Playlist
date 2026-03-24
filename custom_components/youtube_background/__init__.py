@@ -28,6 +28,7 @@ from .const import (
     CONF_DASHBOARD_PATH,
     CONF_DEBUG,
     CONF_DEFAULT_PLAYLIST_ID,
+    CONF_DEFAULT_PLAYLIST_TITLE,
     CONF_ENABLED,
     CONF_ENTITY_ID,
     CONF_FADE_COLOR,
@@ -54,7 +55,7 @@ PANEL_URL_PATH = "youtube-background"
 PANEL_STATIC_URL = f"{STATIC_URL_BASE}/youtube-background-panel.js"
 RUNTIME_STATIC_URL = f"{STATIC_URL_BASE}/youtube-background-runtime.js"
 PANEL_JS = "youtube-background-panel"
-ASSET_VERSION = "1.0.40"
+ASSET_VERSION = "1.0.55"
 
 
 class YouTubeBackgroundData:
@@ -390,6 +391,7 @@ def _prepare_mapping(mapping: dict[str, Any]) -> dict[str, Any]:
     view_path = _normalize_view_path(mapping.get(CONF_VIEW_PATH, ""))
     entity_id = (mapping.get(CONF_ENTITY_ID) or "").strip().lower()
     default_playlist_id = _normalize_playlist_value(mapping.get(CONF_DEFAULT_PLAYLIST_ID))
+    default_playlist_title = str(mapping.get(CONF_DEFAULT_PLAYLIST_TITLE) or "").strip()
 
     state_map_in = mapping.get(CONF_STATE_MAP) or {}
     state_map: dict[str, str] = {}
@@ -428,6 +430,7 @@ def _prepare_mapping(mapping: dict[str, Any]) -> dict[str, Any]:
         CONF_VIEW_PATH: view_path or "",
         CONF_ENTITY_ID: entity_id,
         CONF_DEFAULT_PLAYLIST_ID: default_playlist_id,
+        CONF_DEFAULT_PLAYLIST_TITLE: default_playlist_title,
         CONF_STATE_MAP: state_map,
         CONF_MUTE: _to_bool(mapping.get(CONF_MUTE), True),
         CONF_AUTOPLAY: _to_bool(mapping.get(CONF_AUTOPLAY), True),

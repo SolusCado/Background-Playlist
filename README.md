@@ -88,6 +88,20 @@ Example:
 - State `night` → nighttime playlist
 - Fallback → default playlist
 
+## Screenshots
+
+### Mapping overview
+
+![Mapping Overview](assets/Mapping%20Overview.png)
+
+### Configure mapping
+
+![Configure Mapping](assets/Configure%20Mapping.png)
+
+### Example background
+
+![Example](assets/Example.png)
+
 ### Notes
 
 - The live background player only runs on configured dashboards and views.
