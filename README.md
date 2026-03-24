@@ -2,17 +2,44 @@
 
 This integration allows you to set YouTube playlists as backgrounds for your Lovelace dashboards/views based on Home Assistant entity states.
 
+[![Open your Home Assistant instance and open a repository inside the Home Assistant Community Store.](https://my.home-assistant.io/badges/hacs_repository.svg)](https://my.home-assistant.io/redirect/hacs_repository/?repository=Background-Playlist&category=integration)
+
 ## Installation
 
-1. Install via HACS (recommended) or copy the `custom_components/youtube_background` folder to your Home Assistant config directory.
-2. Restart Home Assistant.
-3. Add the integration in Settings > Devices & Services.
-4. Optionally add a YouTube Data API key for playlist search and validation.
-5. Configure mappings in the YouTube Background panel.
+### Option 1: HACS (Recommended)
+
+#### Install from default HACS store
+
+1. In Home Assistant, go to **Settings → Devices & Services → Integrations**.
+2. Click the **Explore & Download** button in HACS.
+3. Search for **YouTube Background** in HACS.
+4. Click **Install**.
+5. Restart Home Assistant.
+6. Go to **Settings → Devices & Services** and click **Create Integration** to add **YouTube Background**.
+
+#### Or add as custom repository
+
+1. In HACS, click the menu (⋮) in the top right and select **Custom repositories**.
+2. Paste this URL: `https://github.com/SolusCado/Background-Playlist`
+3. Select **Integration** as the category.
+4. Click **Create**.
+5. Search for **YouTube Background** and click **Install**.
+6. Restart Home Assistant.
+7. Go to **Settings → Devices & Services** and click **Create Integration** to add **YouTube Background**.
+
+### Option 2: Manual Installation
+
+1. Download the repository as a ZIP file from [GitHub](https://github.com/SolusCado/Background-Playlist) (or clone it).
+2. Extract the `youtube_background` folder from `custom_components/`.
+3. Copy it to your Home Assistant `config/custom_components/` directory.
+4. Restart Home Assistant.
+5. Go to **Settings → Devices & Services** and click **Create Integration** to add **YouTube Background**.
+
+### API Key Setup (Optional but Recommended)
+
+An API key is optional, but strongly recommended for enhanced functionality (playlist search, validation, metadata).
 
 ## YouTube API Key
-
-An API key is optional, but strongly recommended.
 
 Without an API key, you can still paste a playlist ID or URL manually. With an API key, the integration can:
 - Search for playlists from the panel
@@ -39,6 +66,8 @@ Without an API key, you can still paste a playlist ID or URL manually. With an A
 ## Configuration
 
 After installing, open the **YouTube Backgrounds** panel from the Home Assistant sidebar to manage your mappings.
+
+![Mapping overview](assets/Mapping%20Overview.png)
 
 Each mapping can specify:
 - Dashboard path
@@ -78,6 +107,8 @@ Examples:
 6. Optionally set an **Entity ID** and add **state rules** to switch playlists dynamically.
 7. Save the mapping.
 
+![Configure mapping](assets/Configure%20Mapping.png)
+
 ### State-based playlist switching
 
 If an entity is configured, the integration will check its current state and try to match it against your state rules.
@@ -88,29 +119,13 @@ Example:
 - State `night` → nighttime playlist
 - Fallback → default playlist
 
-## Screenshots
-
-### Mapping overview
-
-![Mapping Overview](assets/Mapping%20Overview.png)
-
-### Configure mapping
-
-![Configure Mapping](assets/Configure%20Mapping.png)
-
-### Example background
-
-![Example](assets/Example.png)
+![Example background](assets/Example.png)
 
 ### Notes
 
 - The live background player only runs on configured dashboards and views.
 - If you navigate to a dashboard or screen without a matching mapping, the player is hidden.
 - The preview in the panel is designed to match the live dashboard behavior as closely as possible.
-
-## Migration from YAML
-
-If you were using the old YAML-based config, you can manually recreate the mappings in the panel.
 
 ## Support
 
