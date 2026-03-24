@@ -1,6 +1,6 @@
 """Constants for YouTube Background integration."""
 
-DOMAIN = "youtube_background"
+DOMAIN = "youtube"
 CONF_MAPPINGS = "mappings"
 CONF_DASHBOARD_PATH = "dashboard_path"
 CONF_VIEW_PATH = "view_path"

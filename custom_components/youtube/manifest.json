@@ -1,9 +1,17 @@
 {
   "domain": "youtube",
   "name": "YouTube Background",
-  "codeowners": ["@SolusCado"],
+  "codeowners": [
+    "@SolusCado"
+  ],
   "config_flow": true,
-  "dependencies": ["panel_custom", "websocket_api", "http", "frontend", "lovelace"],
+  "dependencies": [
+    "panel_custom",
+    "websocket_api",
+    "http",
+    "frontend",
+    "lovelace"
+  ],
   "documentation": "https://github.com/SolusCado/Background-Playlist",
   "integration_type": "service",
   "iot_class": "local_polling",
