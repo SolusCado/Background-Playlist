@@ -146,6 +146,7 @@
   let gestureHandlersInstalled = false;
   let lastActivationAt = 0;
   let safariGestureUnlocked = false;
+  let pendingGesturePlayback = false;
 
   function isSafariBrowser() {
     const ua = navigator.userAgent || "";
@@ -295,13 +296,15 @@
   }
 
   function attemptPlaybackFromGesture() {
+    pendingGesturePlayback = true;
+    safariGestureUnlocked = true;
+
     const player = window.IDEAS?.yt?.player;
     if (!player || typeof player.getPlayerState !== "function") {
       log("No player detected");
       return;
     }
 
-    safariGestureUnlocked = true;
     const gestureBehavior = getBehavior();
 
     try {
@@ -322,9 +325,11 @@
         log("Start playback from user gesture");
         applyMuteSetting(player, gestureBehavior);
         player.playVideo();
+        pendingGesturePlayback = false;
       } else if (typeof player.setPlaybackQuality === "function") {
         player.setPlaybackQuality("highres");
         log("Request high-resolution playback");
+        pendingGesturePlayback = false;
       }
     } catch (error) {
       log("Gesture playback failed", error);
@@ -370,6 +375,8 @@
       window.addEventListener("mousedown", () => handleActivation(true), true);
       window.addEventListener("touchstart", () => handleActivation(false), { capture: true, passive: true });
     }
+    window.addEventListener("click", () => handleActivation(true), true);
+    window.addEventListener("touchend", () => handleActivation(false), { capture: true, passive: true });
     window.addEventListener("dblclick", handleDoubleClick, true);
     window.addEventListener("keydown", (event) => {
       if (event.key === "Enter" || event.key === " ") {
@@ -555,6 +562,18 @@
               scheduleInitialShuffle(event.target, currentId, readyBehavior);
             } else {
               event.target.playVideo();
+            }
+
+            if (pendingGesturePlayback) {
+              setTimeout(() => {
+                try {
+                  applyMuteSetting(event.target, readyBehavior);
+                  event.target.playVideo();
+                  pendingGesturePlayback = false;
+                } catch (error) {
+                  console.warn("[YouTube Background] Gesture replay failed", error);
+                }
+              }, 0);
             }
           } else {
             hidePlayer();
