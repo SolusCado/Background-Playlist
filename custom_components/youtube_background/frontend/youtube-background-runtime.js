@@ -427,6 +427,196 @@
     }, 700);
   }
 
+  function ensurePlayerContainer() {
+    let ytPlayer = document.getElementById("background-player");
+    if (ytPlayer) {
+      return ytPlayer;
+    }
+
+    ytPlayer = Object.assign(document.createElement("div"), {
+      id: "background-player",
+      innerHTML: "<div id='yt-Iframe'></div>"
+    });
+    document.body.appendChild(ytPlayer);
+
+    if (!document.getElementById("youtube-background-player-style")) {
+      document.head.appendChild(Object.assign(document.createElement("style"), {
+        id: "youtube-background-player-style",
+        textContent: `
+          div#background-player {
+            transition: opacity 0.6s ease-in-out;
+            opacity: 0;
+            position: fixed;
+            inset: 0;
+            width: 100vw;
+            height: 100vh;
+            margin: auto;
+            pointer-events: none;
+            overflow: hidden;
+            z-index: 0;
+          }
+          #background-player.visible {
+            opacity: 1;
+          }
+          #background-player.no-transition {
+            transition: none;
+          }
+          div#background-player::after {
+            content: '';
+            background: var(--yt-overlay-gradient, none);
+            pointer-events: none;
+            position: fixed;
+            inset: 0;
+          }
+          div#background-player > #yt-Iframe,
+          div#background-player iframe {
+            width: max(100vw, calc(100vh * 16 / 9));
+            height: max(100vh, calc(100vw * 9 / 16));
+            position: absolute;
+            top: 50%;
+            left: 50%;
+            transform: translate(-50%, -50%);
+          }
+          body {
+            background-color: transparent;
+            --view-background: none;
+          }
+          html:not(.bubble-html-scroll-locked) body > home-assistant {
+            position: absolute;
+            z-index: 1;
+            width: 100%;
+          }
+      `}));
+    }
+
+    installGestureHandlers();
+    return ytPlayer;
+  }
+
+  function initializeYouTubePlayer() {
+    if (typeof YT === "undefined" || !YT || typeof YT.Player !== "function") {
+      console.warn("[YouTube Background] YouTube Iframe API is not ready yet.");
+      return;
+    }
+
+    ensurePlayerContainer();
+
+    const existingPlayer = window.IDEAS?.yt?.player;
+    if (existingPlayer && typeof existingPlayer.destroy === "function") {
+      try {
+        existingPlayer.destroy();
+      } catch (error) {
+        console.warn("[YouTube Background] Failed to destroy previous player", error);
+      }
+    }
+
+    const onInitBehavior = getBehavior();
+    const origin = window.location.origin || undefined;
+    const widgetReferrer = window.location.href || undefined;
+    window.IDEAS.yt.player = new YT.Player("yt-Iframe", {
+      height: "100%",
+      width: "100%",
+      host: "https://www.youtube.com",
+      playerVars: {
+        autoplay: onInitBehavior.autoplay ? 1 : 0,
+        controls: 0,
+        modestbranding: 1,
+        rel: 0,
+        fs: 1,
+        mute: onInitBehavior.mute ? 1 : 0,
+        playsinline: 1,
+        enablejsapi: 1,
+        origin,
+        widget_referrer: widgetReferrer
+      },
+      events: {
+        onReady: function (event) {
+          const currentId = window.IDEAS.yt.currentPlaylistId;
+          const readyBehavior = getBehavior();
+          log(`Starting playlist ${currentId}`);
+          ensureInlineIframeAttributes();
+          setTimeout(ensureInlineIframeAttributes, 250);
+          setTimeout(ensureInlineIframeAttributes, 1200);
+
+          const loader = readyBehavior.autoplay ? "loadPlaylist" : "cuePlaylist";
+          event.target[loader]({
+            list: currentId,
+            listType: "playlist",
+            index: 0,
+            suggestedQuality: "highres"
+          });
+          if (typeof event.target.setShuffle === "function") {
+            event.target.setShuffle(readyBehavior.randomize);
+          }
+          event.target.setPlaybackQuality("highres");
+          applyMuteSetting(event.target, readyBehavior);
+          if (readyBehavior.autoplay) {
+            if (readyBehavior.randomize) {
+              scheduleInitialShuffle(event.target, currentId, readyBehavior);
+            } else {
+              event.target.playVideo();
+            }
+          } else {
+            hidePlayer();
+          }
+        },
+        onStateChange: function (event) {
+          const stateBehavior = getBehavior();
+          if (stateBehavior.debug) {
+            console.log(Object.keys(YT.PlayerState).find(key => YT.PlayerState[key] === event.data));
+          }
+
+          if (event.data === YT.PlayerState.PLAYING) {
+            applyMuteSetting(event.target, stateBehavior);
+            showPlayer();
+          } else if (event.data === YT.PlayerState.ENDED) {
+            if (stateBehavior.autoplay && window.IDEAS.yt.isActive) {
+              setPlayerVisibility(false);
+              if (stateBehavior.randomize) {
+                if (typeof event.target.nextVideo === "function") {
+                  event.target.nextVideo();
+                } else {
+                  event.target.playVideo();
+                }
+              } else {
+                event.target.playVideoAt(0);
+              }
+            } else {
+              hidePlayer();
+            }
+          } else if (event.data === YT.PlayerState.PAUSED) {
+            if (stateBehavior.autoplay && window.IDEAS.yt.isActive) {
+              log("Resuming from unexpected pause");
+              event.target.playVideo();
+            }
+          } else if (
+            stateBehavior.autoplay &&
+            window.IDEAS.yt.isActive &&
+            event.data !== YT.PlayerState.BUFFERING &&
+            event.data !== YT.PlayerState.CUED
+          ) {
+            setPlayerVisibility(false);
+            event.target.setPlaybackQuality("highres");
+            applyMuteSetting(event.target, stateBehavior);
+            event.target.playVideo();
+          } else if (!stateBehavior.autoplay) {
+            hidePlayer();
+          }
+        },
+        onError: function (event) {
+          console.warn("[YouTube Background] Player error", event?.data, {
+            playlistId: window.IDEAS?.yt?.currentPlaylistId,
+            href: window.location.href,
+            safari: isSafariBrowser()
+          });
+        }
+      }
+    });
+
+    applyTransitionSetting();
+    applyOverlaySetting();
+  }
+
   function createPlayer(playlistId) {
     const behavior = getBehavior();
 
@@ -486,189 +676,31 @@
     }
 
     window.IDEAS.yt.currentPlaylistId = playlistId;
+    window.onYouTubeIframeAPIReady = initializeYouTubePlayer;
+    ensurePlayerContainer();
+
     if (!document.querySelector('script[src*="youtube.com/iframe_api"]')) {
       document.head.appendChild(Object.assign(document.createElement("script"), { src: "https://www.youtube.com/iframe_api" }));
     } else if (typeof YT !== "undefined" && YT && YT.Player) {
-      window.onYouTubeIframeAPIReady();
+      initializeYouTubePlayer();
     }
 
-    var ytPlayer = document.getElementById("background-player");
-    if (!ytPlayer) {
-      ytPlayer = Object.assign(document.createElement("div"), {
-        id: "background-player",
-        innerHTML: "<div id='yt-Iframe'></div>"
-      });
-      document.body.appendChild(ytPlayer);
-
-      document.head.appendChild(Object.assign(document.createElement("style"),{
-        textContent: `
-          div#background-player {
-            transition: opacity 0.6s ease-in-out;
-            opacity: 0;
-            position: fixed;
-            inset: 0;
-            width: 100vw;
-            height: 100vh;
-            margin: auto;
-            pointer-events: none;
-            overflow: hidden;
-            z-index: 0;
+    if (!window.IDEAS?.yt?.keepaliveInterval) {
+      window.IDEAS.yt.keepaliveInterval = setInterval(() => {
+        if (!getBehavior().debug) {
+          return;
+        }
+        if (IDEAS?.yt?.player && typeof IDEAS.yt.player.getPlayerState === 'function') {
+          try {
+            const state = IDEAS.yt.player.getPlayerState();
+            console.debug('[YouTube Keepalive] Player state:', state);
+          } catch (err) {
+            console.warn('[YouTube Keepalive] Player check failed:', err);
           }
-          #background-player.visible {
-            opacity: 1;
-          }
-          #background-player.no-transition {
-            transition: none;
-          }
-          div#background-player::after {
-            content: '';
-            background: var(--yt-overlay-gradient, none);
-            pointer-events: none;
-            position: fixed;
-            inset: 0;
-          }
-          div#background-player > #yt-Iframe,
-          div#background-player iframe {
-            width: max(100vw, calc(100vh * 16 / 9));
-            height: max(100vh, calc(100vw * 9 / 16));
-            position: absolute;
-            top: 50%;
-            left: 50%;
-            transform: translate(-50%, -50%);
-          }
-          body {
-            background-color: transparent;
-            --view-background: none;
-          }
-          html:not(.bubble-html-scroll-locked) body > home-assistant {
-            position: absolute;
-            z-index: 1;
-            width: 100%;
-          }
-      `}));
-
-      installGestureHandlers();
-
-      window.onYouTubeIframeAPIReady = function () {
-        const onInitBehavior = getBehavior();
-        const origin = window.location.origin || undefined;
-        const widgetReferrer = window.location.href || undefined;
-        window.IDEAS.yt.player = new YT.Player('yt-Iframe', {
-          height: '100%',
-          width: '100%',
-          host: 'https://www.youtube.com',
-          playerVars: {
-            autoplay: onInitBehavior.autoplay ? 1 : 0,
-            controls: 0,
-            modestbranding: 1,
-            rel: 0,
-            fs: 1,
-            mute: onInitBehavior.mute ? 1 : 0,
-            playsinline: 1,
-            enablejsapi: 1,
-            origin,
-            widget_referrer: widgetReferrer
-          },
-          events: {
-            onReady: function (event) {
-              const currentId = window.IDEAS.yt.currentPlaylistId;
-              const readyBehavior = getBehavior();
-              log(`Starting playlist ${currentId}`);
-              ensureInlineIframeAttributes();
-              setTimeout(ensureInlineIframeAttributes, 250);
-              setTimeout(ensureInlineIframeAttributes, 1200);
-
-              const loader = readyBehavior.autoplay ? "loadPlaylist" : "cuePlaylist";
-              event.target[loader]({
-                list: currentId,
-                listType: 'playlist',
-                index: 0,
-                suggestedQuality: 'highres'
-              });
-              if (typeof event.target.setShuffle === "function") {
-                event.target.setShuffle(readyBehavior.randomize);
-              }
-              event.target.setPlaybackQuality('highres');
-              applyMuteSetting(event.target, readyBehavior);
-              if (readyBehavior.autoplay) {
-                if (readyBehavior.randomize) {
-                  scheduleInitialShuffle(event.target, currentId, readyBehavior);
-                } else {
-                  event.target.playVideo();
-                }
-              } else {
-                hidePlayer();
-              }
-            },
-            onStateChange: function (event) {
-              const stateBehavior = getBehavior();
-              if (stateBehavior.debug) {
-                console.log(Object.keys(YT.PlayerState).find(key => YT.PlayerState[key] === event.data));
-              }
-
-              if (event.data === YT.PlayerState.PLAYING) {
-                applyMuteSetting(event.target, stateBehavior);
-                showPlayer();
-              } else if (event.data === YT.PlayerState.ENDED) {
-                // On ENDED: advance to next video if autoplay is on
-                if (stateBehavior.autoplay && window.IDEAS.yt.isActive) {
-                  setPlayerVisibility(false);
-                  if (stateBehavior.randomize) {
-                    if (typeof event.target.nextVideo === "function") {
-                      event.target.nextVideo();
-                    } else {
-                      event.target.playVideo();
-                    }
-                  } else {
-                    event.target.playVideoAt(0);
-                  }
-                } else {
-                  hidePlayer();
-                }
-              } else if (event.data === YT.PlayerState.PAUSED) {
-                // PAUSED: only auto-resume if we are still active and isActive flag is set.
-                // If another script paused us (isActive = false), leave it alone.
-                if (stateBehavior.autoplay && window.IDEAS.yt.isActive) {
-                  log("Resuming from unexpected pause");
-                  event.target.playVideo();
-                }
-              } else if (
-                stateBehavior.autoplay &&
-                window.IDEAS.yt.isActive &&
-                event.data !== YT.PlayerState.BUFFERING &&
-                event.data !== YT.PlayerState.CUED
-              ) {
-                // Unstarted (-1) or other non-terminal state: attempt restart
-                setPlayerVisibility(false);
-                event.target.setPlaybackQuality('highres');
-                applyMuteSetting(event.target, stateBehavior);
-                event.target.playVideo();
-              } else if (!stateBehavior.autoplay) {
-                hidePlayer();
-              }
-            }
-          }
-        });
-
-        applyTransitionSetting();
-        applyOverlaySetting();
-
-        setInterval(() => {
-          if (!getBehavior().debug) {
-            return;
-          }
-          if (IDEAS?.yt?.player && typeof IDEAS.yt.player.getPlayerState === 'function') {
-            try {
-              const state = IDEAS.yt.player.getPlayerState();
-              console.debug('[YouTube Keepalive] Player state:', state);
-            } catch (err) {
-              console.warn('[YouTube Keepalive] Player check failed:', err);
-            }
-          } else {
-            console.warn('[YouTube Keepalive] Player not ready or broken');
-          }
-        }, 10 * 60 * 1000);
-      };
+        } else {
+          console.warn('[YouTube Keepalive] Player not ready or broken');
+        }
+      }, 10 * 60 * 1000);
     }
   }
 
