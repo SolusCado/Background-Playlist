@@ -520,13 +520,11 @@
     const onInitBehavior = getBehavior();
     const origin = window.location.origin || undefined;
     const widgetReferrer = window.location.href || undefined;
-    const ytHost = isSafariBrowser()
-      ? "https://www.youtube-nocookie.com"
-      : "https://www.youtube.com";
+    const playlistId = window.IDEAS?.yt?.currentPlaylistId;
     window.IDEAS.yt.player = new YT.Player("yt-Iframe", {
       height: "100%",
       width: "100%",
-      host: ytHost,
+      host: "https://www.youtube.com",
       playerVars: {
         autoplay: onInitBehavior.autoplay ? 1 : 0,
         controls: 0,
@@ -538,7 +536,8 @@
         enablejsapi: 1,
         origin,
         widget_referrer: widgetReferrer,
-        ...(isSafariBrowser() ? { cookie: 0 } : {})
+        // Pass list at construction time so Safari doesn't reject deferred loadPlaylist
+        ...(playlistId ? { list: playlistId, listType: "playlist" } : {})
       },
       events: {
         onReady: function (event) {
