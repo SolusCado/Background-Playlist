@@ -520,10 +520,13 @@
     const onInitBehavior = getBehavior();
     const origin = window.location.origin || undefined;
     const widgetReferrer = window.location.href || undefined;
+    const ytHost = isSafariBrowser()
+      ? "https://www.youtube-nocookie.com"
+      : "https://www.youtube.com";
     window.IDEAS.yt.player = new YT.Player("yt-Iframe", {
       height: "100%",
       width: "100%",
-      host: "https://www.youtube.com",
+      host: ytHost,
       playerVars: {
         autoplay: onInitBehavior.autoplay ? 1 : 0,
         controls: 0,
@@ -534,7 +537,8 @@
         playsinline: 1,
         enablejsapi: 1,
         origin,
-        widget_referrer: widgetReferrer
+        widget_referrer: widgetReferrer,
+        ...(isSafariBrowser() ? { cookie: 0 } : {})
       },
       events: {
         onReady: function (event) {
