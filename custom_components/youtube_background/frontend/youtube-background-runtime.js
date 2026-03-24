@@ -205,7 +205,7 @@
     "media-browser",
     "hassio",
     "ingress",
-    "youtube", // our own panel
+    "youtube_background", // our own panel
   ]);
 
   function isDashboardRoute(pathname = window.location.pathname) {

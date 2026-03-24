@@ -51,7 +51,7 @@ from .const import (
 _LOGGER = logging.getLogger(__name__)
 
 CONFIG_SCHEMA = cv.config_entry_only_config_schema(DOMAIN)
-STATIC_URL_BASE = "/youtube_static"
+STATIC_URL_BASE = "/youtube_background_static"
 PANEL_URL_PATH = "youtube-background"
 PANEL_STATIC_URL = f"{STATIC_URL_BASE}/youtube-background-panel.js"
 RUNTIME_STATIC_URL = f"{STATIC_URL_BASE}/youtube-background-runtime.js"
