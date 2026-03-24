@@ -16,6 +16,12 @@ class YouTubeBackgroundConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
 
     VERSION = 1
 
+    @staticmethod
+    @callback
+    def async_get_options_flow(config_entry):
+        """Get the options flow for this handler."""
+        return YouTubeBackgroundOptionsFlow(config_entry)
+
     async def async_step_user(self, user_input: Optional[Dict[str, Any]] = None) -> Any:
         """Handle the initial step."""
         if user_input is not None:
@@ -31,27 +37,23 @@ class YouTubeBackgroundConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
         )
 
 
-@callback
-def async_get_options_flow(config_entry):
-    """Get the options flow for this handler."""
-    return YouTubeBackgroundOptionsFlow(config_entry)
-
-
 class YouTubeBackgroundOptionsFlow(config_entries.OptionsFlow):
     """Handle options."""
 
     def __init__(self, config_entry):
         """Initialize options flow."""
-        self.config_entry = config_entry
+        super().__init__()
+        self.entry_data = config_entry.data
+        self.entry_options = config_entry.options
 
     async def async_step_init(self, user_input=None):
         """Manage the options."""
         if user_input is not None:
             return self.async_create_entry(title="", data=user_input)
 
-        existing_key = self.config_entry.options.get(
+        existing_key = self.entry_options.get(
             CONF_YOUTUBE_API_KEY,
-            self.config_entry.data.get(CONF_YOUTUBE_API_KEY, ""),
+            self.entry_data.get(CONF_YOUTUBE_API_KEY, ""),
         )
 
         return self.async_show_form(

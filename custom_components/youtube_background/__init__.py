@@ -54,7 +54,7 @@ PANEL_URL_PATH = "youtube-background"
 PANEL_STATIC_URL = f"{STATIC_URL_BASE}/youtube-background-panel.js"
 RUNTIME_STATIC_URL = f"{STATIC_URL_BASE}/youtube-background-runtime.js"
 PANEL_JS = "youtube-background-panel"
-ASSET_VERSION = "1.0.20"
+ASSET_VERSION = "1.0.40"
 
 
 class YouTubeBackgroundData:
@@ -69,8 +69,31 @@ class YouTubeBackgroundData:
     async def async_load(self) -> None:
         """Load data from storage."""
         data = await self._store.async_load()
-        if data:
-            self._mappings = data.get(CONF_MAPPINGS, [])
+        if not data:
+            self._mappings = []
+            return
+
+        raw_mappings = data.get(CONF_MAPPINGS, [])
+        if not isinstance(raw_mappings, list):
+            raw_mappings = []
+
+        migrated: list[dict[str, Any]] = []
+        changed = False
+
+        for raw in raw_mappings:
+            if not isinstance(raw, dict):
+                changed = True
+                continue
+
+            prepared = _prepare_mapping(raw)
+            migrated.append(prepared)
+            if prepared != raw:
+                changed = True
+
+        self._mappings = migrated
+
+        if changed:
+            await self.async_save()
 
     async def async_save(self) -> None:
         """Save data to storage."""
@@ -95,7 +118,7 @@ class YouTubeBackgroundData:
             mapping_dashboard = (mapping.get(CONF_DASHBOARD_PATH) or "").strip("/")
             mapping_view = (mapping.get(CONF_VIEW_PATH) or "").strip("/")
 
-            if mapping_dashboard != normalized_dashboard:
+            if not _dashboard_paths_match(mapping_dashboard, normalized_dashboard):
                 continue
 
             if mapping_view and mapping_view == normalized_view:
@@ -341,11 +364,16 @@ async def websocket_delete_mapping(hass: HomeAssistant, connection, msg):
 
 
 def _normalize_dashboard_path(path: str) -> str:
-    """Normalize dashboard path from route-style values."""
-    normalized = (path or "").strip()
-    if normalized.startswith("/"):
-        normalized = normalized.strip("/")
-    return normalized
+    """Normalize dashboard path — strip leading/trailing slashes only."""
+    return (path or "").strip().strip("/")
+
+
+def _dashboard_paths_match(stored: str, requested: str) -> bool:
+    """Match dashboard paths tolerantly — treat 'foo' and 'dashboard-foo' as equal."""
+    def _bare(p: str) -> str:
+        p = (p or "").strip().strip("/")
+        return p[len("dashboard-"):] if p.startswith("dashboard-") else p
+    return stored == requested or _bare(stored) == _bare(requested)
 
 
 def _normalize_view_path(path: str | None) -> str | None:
@@ -395,17 +423,17 @@ def _prepare_mapping(mapping: dict[str, Any]) -> dict[str, Any]:
 
     return {
         CONF_ID: mapping_id,
-        CONF_ENABLED: bool(mapping.get(CONF_ENABLED, True)),
+        CONF_ENABLED: _to_bool(mapping.get(CONF_ENABLED), True),
         CONF_DASHBOARD_PATH: dashboard_path,
         CONF_VIEW_PATH: view_path or "",
         CONF_ENTITY_ID: entity_id,
         CONF_DEFAULT_PLAYLIST_ID: default_playlist_id,
         CONF_STATE_MAP: state_map,
-        CONF_MUTE: bool(mapping.get(CONF_MUTE, True)),
-        CONF_AUTOPLAY: bool(mapping.get(CONF_AUTOPLAY, True)),
-        CONF_RANDOMIZE: bool(mapping.get(CONF_RANDOMIZE, True)),
+        CONF_MUTE: _to_bool(mapping.get(CONF_MUTE), True),
+        CONF_AUTOPLAY: _to_bool(mapping.get(CONF_AUTOPLAY), True),
+        CONF_RANDOMIZE: _to_bool(mapping.get(CONF_RANDOMIZE), True),
         CONF_TRANSITION: str(mapping.get(CONF_TRANSITION, "fade") or "fade").strip() or "fade",
-        CONF_DEBUG: bool(mapping.get(CONF_DEBUG, False)),
+        CONF_DEBUG: _to_bool(mapping.get(CONF_DEBUG), False),
         CONF_FADE_CORNERS: fade_corners,
         CONF_FADE_COLOR: raw_color,
         CONF_FADE_OPACITY: fade_opacity,
@@ -432,6 +460,23 @@ def _get_youtube_api_key(hass: HomeAssistant) -> str:
 def _normalize_playlist_value(value: Any) -> str:
     """Normalize a playlist field to a raw playlist ID when possible."""
     return extract_playlist_id(str(value).strip()) if value is not None else ""
+
+
+def _to_bool(value: Any, default: bool) -> bool:
+    """Convert different value shapes to bool with safe string handling."""
+    if value is None:
+        return default
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, (int, float)):
+        return bool(value)
+    if isinstance(value, str):
+        normalized = value.strip().lower()
+        if normalized in {"true", "1", "yes", "on"}:
+            return True
+        if normalized in {"false", "0", "no", "off", ""}:
+            return False
+    return bool(value)
 
 
 async def _async_register_static_assets(hass: HomeAssistant) -> None:

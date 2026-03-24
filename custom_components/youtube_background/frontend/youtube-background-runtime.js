@@ -1,20 +1,51 @@
 // Refactored from background.js
 (function () {
+  // Singleton guard — prevent re-execution on SPA navigation re-loads
+  if (window.__ytbgRuntimeLoaded) return;
+  window.__ytbgRuntimeLoaded = true;
+
   const LOG_PREFIX = "YouTube Background";
   window.IDEAS = window.IDEAS || {};
   window.IDEAS.yt = window.IDEAS.yt || {
     currentPlaylistId: null,
-    player: null
+    player: null,
+    pendingShufflePlaylistId: null
   };
+
+  function toBoolean(value, defaultValue) {
+    if (value === undefined || value === null) return defaultValue;
+    if (typeof value === "boolean") return value;
+    if (typeof value === "number") return value !== 0;
+    if (typeof value === "string") {
+      const normalized = value.trim().toLowerCase();
+      if (["true", "1", "yes", "on"].includes(normalized)) return true;
+      if (["false", "0", "no", "off", ""].includes(normalized)) return false;
+    }
+    return Boolean(value);
+  }
 
   function getBehavior(config = currentConfig) {
     return {
-      mute: config?.mute !== false,
-      autoplay: config?.autoplay !== false,
-      randomize: config?.randomize !== false,
+      mute: toBoolean(config?.mute, true),
+      autoplay: toBoolean(config?.autoplay, true),
+      randomize: toBoolean(config?.randomize, true),
       transition: config?.transition === "none" ? "none" : "fade",
-      debug: config?.debug === true,
+      debug: toBoolean(config?.debug, false),
     };
+  }
+
+  function getHass() {
+    const ha = document.querySelector("home-assistant");
+    if (ha?.hass) {
+      return ha.hass;
+    }
+
+    const main = ha?.shadowRoot?.querySelector("home-assistant-main");
+    if (main?.hass) {
+      return main.hass;
+    }
+
+    return null;
   }
 
   function log(...args) {
@@ -78,16 +109,16 @@
     const hasBottom = selected.has("bottom_left") || selected.has("bottom_right");
 
     if (hasRight) {
-      gradients.push(`linear-gradient(270deg, ${clear} 50%, ${solid} 100%)`);
+      gradients.push(`linear-gradient(to left, ${solid} 0%, ${clear} 50%)`);
     }
     if (hasBottom) {
-      gradients.push(`linear-gradient(0deg, ${clear} 50%, ${solid} 100%)`);
+      gradients.push(`linear-gradient(to top, ${solid} 0%, ${clear} 50%)`);
     }
     if (hasLeft) {
-      gradients.push(`linear-gradient(90deg, ${clear} 50%, ${solid} 100%)`);
+      gradients.push(`linear-gradient(to right, ${solid} 0%, ${clear} 50%)`);
     }
     if (hasTop) {
-      gradients.push(`linear-gradient(180deg, ${clear} 50%, ${solid} 100%)`);
+      gradients.push(`linear-gradient(to bottom, ${solid} 0%, ${clear} 50%)`);
     }
 
     return gradients.join(", ") || "none";
@@ -96,26 +127,73 @@
   function applyOverlaySetting(config = currentConfig) {
     const playerEl = document.getElementById("background-player");
     if (!playerEl) return;
-    playerEl.style.setProperty("--yt-overlay-gradient", buildCornerGradients(config));
+    const gradient = buildCornerGradients(config);
+    playerEl.style.setProperty("--yt-overlay-gradient", gradient);
+    log(`Applied overlay gradient: ${gradient.substring(0, 50)}...`);
   }
 
   let lastViewId = null;
   let lastTemplateName = null;
   let currentConfig = null;
   let lastResolvedState = null;
+  let gestureHandlersInstalled = false;
+  let lastActivationAt = 0;
 
   function getLovelaceRoot() {
-    return document
-      .querySelector("home-assistant")?.shadowRoot
-      ?.querySelector("home-assistant-main")?.shadowRoot
-      ?.querySelector("ha-panel-lovelace")?.shadowRoot
-      ?.querySelector("hui-root");
+    const ha = document.querySelector("home-assistant");
+    const candidates = [
+      ha?.shadowRoot,
+      ha?.shadowRoot?.querySelector("home-assistant-main")?.shadowRoot,
+      ha?.shadowRoot?.querySelector("home-assistant-main")?.shadowRoot?.querySelector("ha-drawer")?.shadowRoot,
+      ha?.shadowRoot?.querySelector("home-assistant-main")?.shadowRoot?.querySelector("partial-panel-resolver")?.shadowRoot,
+    ].filter(Boolean);
+
+    for (const root of candidates) {
+      const lovelacePanel = root.querySelector("ha-panel-lovelace");
+      const huiRoot = lovelacePanel?.shadowRoot?.querySelector("hui-root");
+      if (huiRoot) {
+        return huiRoot;
+      }
+    }
+
+    return null;
   }
 
   function getCurrentViewIdFromUrl() {
     const segments = window.location.pathname.split("/").filter(Boolean);
     const [, view = "0"] = segments;
     return view;
+  }
+
+  // HA non-dashboard routes — everything else is treated as a potential dashboard
+  const NON_DASHBOARD_ROUTES = new Set([
+    "lovelace-unused", // never a real route but kept for safety
+    "config",
+    "developer-tools",
+    "profile",
+    "history",
+    "logbook",
+    "energy",
+    "map",
+    "shopping-list",
+    "todo",
+    "media-browser",
+    "hassio",
+    "ingress",
+    "youtube_background", // our own panel
+  ]);
+
+  function isDashboardRoute(pathname = window.location.pathname) {
+    const [firstSegment = ""] = pathname.split("/").filter(Boolean);
+    if (!firstSegment) return false;
+    return !NON_DASHBOARD_ROUTES.has(firstSegment);
+  }
+
+  function normalizeDashboardPath(path = "") {
+    // Strip leading/trailing slashes only — preserve the dashboard- prefix
+    // so it matches what HA stores and what lovelace/config expects.
+    const normalized = String(path || "").trim().replace(/^\/+|\/+$/g, "");
+    return normalized || "lovelace";
   }
 
   function getCurrentViewConfig(viewId) {
@@ -130,14 +208,16 @@
   }
 
   async function getConfigForCurrentView() {
+    if (!isDashboardRoute()) {
+      return null;
+    }
+
     const locationParts = window.location.pathname.split("/").filter(Boolean);
-    const dashboardPath = locationParts[0] || "lovelace";
-    const viewId = getCurrentViewIdFromUrl();
-    const viewConfig = getCurrentViewConfig(viewId);
-    const viewPath = viewConfig?.path || locationParts[1] || "";
+    const dashboardPath = normalizeDashboardPath(locationParts[0] || "lovelace");
+    const viewPath = locationParts[1] || "";
 
     // Call websocket to get config
-    const hass = getLovelaceRoot()?.hass;
+    const hass = getHass();
     if (!hass) return null;
 
     try {
@@ -160,7 +240,7 @@
     }
 
     const root = getLovelaceRoot();
-    const hass = root?.hass;
+    const hass = getHass();
     const result = resolvePlaylistId(config, hass);
 
     if (!result?.playlistId) {
@@ -184,22 +264,146 @@
     }
   }
 
+  function setPlayerVisibility(visible) {
+    const playerEl = document.getElementById("background-player");
+    if (!playerEl) return;
+    playerEl.classList.toggle("visible", Boolean(visible));
+  }
+
+  function attemptPlaybackFromGesture() {
+    const player = window.IDEAS?.yt?.player;
+    if (!player || typeof player.getPlayerState !== "function") {
+      log("No player detected");
+      return;
+    }
+
+    const gestureBehavior = getBehavior();
+
+    try {
+      if (player.getPlayerState() === YT.PlayerState.ENDED) {
+        setPlayerVisibility(false);
+        if (gestureBehavior.randomize) {
+          if (typeof player.nextVideo === "function") {
+            player.nextVideo();
+          } else {
+            player.playVideo();
+          }
+        } else if (typeof player.playVideoAt === "function") {
+          player.playVideoAt(0);
+        }
+      }
+
+      if (player.getPlayerState() !== YT.PlayerState.PLAYING) {
+        log("Start playback from user gesture");
+        applyMuteSetting(player, gestureBehavior);
+        player.playVideo();
+      } else if (typeof player.setPlaybackQuality === "function") {
+        player.setPlaybackQuality("highres");
+        log("Request high-resolution playback");
+      }
+    } catch (error) {
+      log("Gesture playback failed", error);
+    }
+  }
+
+  function toggleMuteFromGesture() {
+    const player = window.IDEAS?.yt?.player;
+    if (!player?.isMuted || !player?.mute || !player?.unMute) return;
+
+    try {
+      player.isMuted() ? player.unMute() : player.mute();
+      log("Toggle Background Audio");
+    } catch (error) {
+      log("Gesture mute toggle failed", error);
+    }
+  }
+
+  function installGestureHandlers() {
+    if (gestureHandlersInstalled) return;
+    gestureHandlersInstalled = true;
+
+    const handleActivation = (supportsNativeDoubleClick = false) => {
+      attemptPlaybackFromGesture();
+
+      const now = Date.now();
+      const isDoubleActivation = now - lastActivationAt < 400;
+      lastActivationAt = now;
+
+      if (isDoubleActivation && !supportsNativeDoubleClick) {
+        toggleMuteFromGesture();
+      }
+    };
+
+    const handleDoubleClick = () => {
+      attemptPlaybackFromGesture();
+      toggleMuteFromGesture();
+    };
+
+    if (window.PointerEvent) {
+      window.addEventListener("pointerdown", () => handleActivation(true), true);
+    } else {
+      window.addEventListener("mousedown", () => handleActivation(true), true);
+      window.addEventListener("touchstart", () => handleActivation(false), { capture: true, passive: true });
+    }
+    window.addEventListener("dblclick", handleDoubleClick, true);
+    window.addEventListener("keydown", (event) => {
+      if (event.key === "Enter" || event.key === " ") {
+        attemptPlaybackFromGesture();
+      }
+      if (event.key.toLowerCase() === "m") {
+        toggleMuteFromGesture();
+      }
+    }, true);
+  }
+
   function hidePlayer() {
     const player = window.IDEAS?.yt?.player;
     if (player && typeof player.pauseVideo === "function") {
       player.pauseVideo();
     }
     window.IDEAS.yt.isActive = false;
+    setPlayerVisibility(false);
+  }
 
-    const playerEl = document.getElementById("background-player");
-    if (playerEl && playerEl.classList.contains("visible")) {
-      playerEl.classList.remove("visible");
+  function scheduleInitialShuffle(player, playlistId, behavior) {
+    if (!player || !behavior?.randomize) {
+      window.IDEAS.yt.pendingShufflePlaylistId = null;
+      return;
     }
+
+    window.IDEAS.yt.pendingShufflePlaylistId = playlistId;
+    window.setTimeout(() => {
+      if (
+        window.IDEAS?.yt?.pendingShufflePlaylistId !== playlistId ||
+        window.IDEAS?.yt?.currentPlaylistId !== playlistId
+      ) {
+        return;
+      }
+
+      try {
+        if (typeof player.setShuffle === "function") {
+          player.setShuffle(true);
+        }
+        if (typeof player.nextVideo === "function") {
+          player.nextVideo();
+        } else {
+          player.playVideo();
+        }
+        if (behavior.autoplay) {
+          player.playVideo();
+        }
+      } catch (error) {
+        log("Initial shuffle start failed", error);
+      } finally {
+        if (window.IDEAS?.yt?.pendingShufflePlaylistId === playlistId) {
+          window.IDEAS.yt.pendingShufflePlaylistId = null;
+        }
+      }
+    }, 700);
   }
 
   function createPlayer(playlistId) {
     const behavior = getBehavior();
-    const playlistIndex = behavior.randomize ? Math.floor(Math.random() * 50) : 0;
 
     if (
       window.IDEAS.yt.player &&
@@ -213,7 +417,13 @@
       }
       applyMuteSetting(window.IDEAS.yt.player);
       if (behavior.autoplay) {
-        window.IDEAS.yt.player.playVideo();
+        if (behavior.randomize) {
+          scheduleInitialShuffle(window.IDEAS.yt.player, playlistId, behavior);
+        } else if (typeof window.IDEAS.yt.player.playVideoAt === "function") {
+          window.IDEAS.yt.player.playVideoAt(0);
+        } else {
+          window.IDEAS.yt.player.playVideo();
+        }
       } else {
         hidePlayer();
       }
@@ -230,7 +440,7 @@
       window.IDEAS.yt.player[loader]({
         list: playlistId,
         listType: 'playlist',
-        index: playlistIndex,
+        index: 0,
         suggestedQuality: 'highres'
       });
       if (typeof window.IDEAS.yt.player.setShuffle === "function") {
@@ -239,7 +449,11 @@
       applyMuteSetting(window.IDEAS.yt.player);
       applyOverlaySetting();
       if (behavior.autoplay) {
-        window.IDEAS.yt.player.playVideo();
+        if (behavior.randomize) {
+          scheduleInitialShuffle(window.IDEAS.yt.player, playlistId, behavior);
+        } else {
+          window.IDEAS.yt.player.playVideo();
+        }
       } else {
         hidePlayer();
       }
@@ -268,8 +482,12 @@
             opacity: 0;
             position: fixed;
             inset: 0;
+            width: 100vw;
+            height: 100vh;
             margin: auto;
             pointer-events: none;
+            overflow: hidden;
+            z-index: 0;
           }
           #background-player.visible {
             opacity: 1;
@@ -284,13 +502,14 @@
             position: fixed;
             inset: 0;
           }
-          div#background-player > iframe {
-            aspect-ratio: 16 / 9;
-            height: 100vh;
-            width: initial;
+          div#background-player > #yt-Iframe,
+          div#background-player iframe {
+            width: max(100vw, calc(100vh * 16 / 9));
+            height: max(100vh, calc(100vw * 9 / 16));
             position: absolute;
+            top: 50%;
             left: 50%;
-            transform: translateX(-50%);
+            transform: translate(-50%, -50%);
           }
           body {
             background-color: transparent;
@@ -303,48 +522,7 @@
           }
       `}));
 
-      document.body.addEventListener('pointerdown', () => {
-        if (!window.IDEAS?.yt?.isActive) return;
-
-        var player = window.IDEAS.yt.player;
-        const pointerBehavior = getBehavior();
-        if (player && player.getPlayerState) {
-          if (player.getPlayerState() === YT.PlayerState.ENDED) {
-            hidePlayer();
-            const pointerBehavior = getBehavior();
-            if (pointerBehavior.randomize && typeof player.nextVideo === "function") {
-              player.nextVideo();
-            } else {
-              player.playVideoAt(0);
-            }
-          }
-
-          if (player.getPlayerState() != YT.PlayerState.PLAYING)
-          {
-            log("Start playback");
-            applyMuteSetting(player, pointerBehavior);
-            player.playVideo();
-          }
-          else { player.setPlaybackQuality('highres'); log("Request high-resolution playback"); }
-        }
-        else {
-          log("No player detected");
-        }
-      });
-
-      document.body.addEventListener('pointerdown', () => {
-        const now = Date.now();
-        const player = window.IDEAS.yt.player;
-
-        if (!player?.isMuted || !player?.mute || !player?.unMute)  return;
-
-        if (now - (window._lastTapTime || 0) < 400) {
-          player.isMuted() ? player.unMute() : player.mute();
-          log("Toggle Background Audio");
-        }
-
-        window._lastTapTime = now;
-      });
+      installGestureHandlers();
 
       window.onYouTubeIframeAPIReady = function () {
         const onInitBehavior = getBehavior();
@@ -370,20 +548,26 @@
             onReady: function (event) {
               const currentId = window.IDEAS.yt.currentPlaylistId;
               const readyBehavior = getBehavior();
-              const readyIndex = readyBehavior.randomize ? Math.floor(Math.random() * 50) : 0;
               log(`Starting playlist ${currentId}`);
 
-              event.target.setShuffle(readyBehavior.randomize);
-              event.target.cuePlaylist({
+              const loader = readyBehavior.autoplay ? "loadPlaylist" : "cuePlaylist";
+              event.target[loader]({
                 list: currentId,
                 listType: 'playlist',
-                index: readyIndex,
+                index: 0,
                 suggestedQuality: 'highres'
               });
+              if (typeof event.target.setShuffle === "function") {
+                event.target.setShuffle(readyBehavior.randomize);
+              }
               event.target.setPlaybackQuality('highres');
               applyMuteSetting(event.target, readyBehavior);
               if (readyBehavior.autoplay) {
-                event.target.playVideo();
+                if (readyBehavior.randomize) {
+                  scheduleInitialShuffle(event.target, currentId, readyBehavior);
+                } else {
+                  event.target.playVideo();
+                }
               } else {
                 hidePlayer();
               }
@@ -393,29 +577,46 @@
               if (stateBehavior.debug) {
                 console.log(Object.keys(YT.PlayerState).find(key => YT.PlayerState[key] === event.data));
               }
+
               if (event.data === YT.PlayerState.PLAYING) {
                 applyMuteSetting(event.target, stateBehavior);
                 showPlayer();
-              }
-              else if (stateBehavior.autoplay && event.data !== YT.PlayerState.BUFFERING && event.data !== YT.PlayerState.CUED) {
-                hidePlayer();
-                event.target.setPlaybackQuality('highres');
-                applyMuteSetting(event.target, stateBehavior);
-                event.target.playVideo();
-              } else if (!stateBehavior.autoplay) {
-                hidePlayer();
-              }
-
-              if (event.data === YT.PlayerState.ENDED) {
-                if (stateBehavior.autoplay) {
-                  if (stateBehavior.randomize && typeof event.target.nextVideo === "function") {
-                    event.target.nextVideo();
+              } else if (event.data === YT.PlayerState.ENDED) {
+                // On ENDED: advance to next video if autoplay is on
+                if (stateBehavior.autoplay && window.IDEAS.yt.isActive) {
+                  setPlayerVisibility(false);
+                  if (stateBehavior.randomize) {
+                    if (typeof event.target.nextVideo === "function") {
+                      event.target.nextVideo();
+                    } else {
+                      event.target.playVideo();
+                    }
                   } else {
                     event.target.playVideoAt(0);
                   }
                 } else {
                   hidePlayer();
                 }
+              } else if (event.data === YT.PlayerState.PAUSED) {
+                // PAUSED: only auto-resume if we are still active and isActive flag is set.
+                // If another script paused us (isActive = false), leave it alone.
+                if (stateBehavior.autoplay && window.IDEAS.yt.isActive) {
+                  log("Resuming from unexpected pause");
+                  event.target.playVideo();
+                }
+              } else if (
+                stateBehavior.autoplay &&
+                window.IDEAS.yt.isActive &&
+                event.data !== YT.PlayerState.BUFFERING &&
+                event.data !== YT.PlayerState.CUED
+              ) {
+                // Unstarted (-1) or other non-terminal state: attempt restart
+                setPlayerVisibility(false);
+                event.target.setPlaybackQuality('highres');
+                applyMuteSetting(event.target, stateBehavior);
+                event.target.playVideo();
+              } else if (!stateBehavior.autoplay) {
+                hidePlayer();
               }
             }
           }
@@ -473,6 +674,15 @@
   }
 
   async function checkViewBackgroundConfig() {
+    if (!isDashboardRoute()) {
+      lastViewId = null;
+      lastTemplateName = null;
+      currentConfig = null;
+      lastResolvedState = null;
+      hidePlayer();
+      return;
+    }
+
     const viewId = getCurrentViewIdFromUrl();
     if (!viewId) return;
 
@@ -485,8 +695,7 @@
     const configChanged = JSON.stringify(config) !== JSON.stringify(currentConfig);
     currentConfig = config;
 
-    const root = getLovelaceRoot();
-    const hass = root?.hass;
+    const hass = getHass();
     const resolved = resolvePlaylistId(config, hass);
     const stateChanged = (resolved?.key || null) !== lastResolvedState;
 
@@ -505,23 +714,25 @@
     }, 3000);
   }
 
-  function waitForLovelace(timeout = 10000) {
+  function waitForLovelace(timeout = 30000) {
     console.info(
-      `%c YouTube Playlist Background %c v1.0.0 `,
+      `%c YouTube Playlist Background %c v1.0.40 `,
       'background: #555; color: white; border-radius: 999px 0 0 999px; padding: 2px 10px; font-weight: 500;',
       'background: #d9534f; color: white; border-radius: 0 999px 999px 0; padding: 2px 10px; font-weight: 500; margin-left: -4px;'
     );
 
+    // Start navigation watcher immediately — the 3s poll will activate once hass is ready
+    watchNavigation();
+
     const start = performance.now();
 
     function tryInit() {
-      if (getLovelaceRoot()?.lovelace) {
+      if (getHass()) {
         checkViewBackgroundConfig();
-        watchNavigation();
       } else if (performance.now() - start < timeout) {
-        requestAnimationFrame(tryInit);
+        setTimeout(tryInit, 500);
       } else {
-        log("Timed out waiting for Lovelace root.");
+        log("Timed out waiting for hass to become available.");
       }
     }
 

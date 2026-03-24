@@ -26,4 +26,4 @@ If you were using the old YAML-based config, you can manually recreate the mappi
 
 ## Support
 
-For issues, please check the [GitHub repository](https://github.com/DeLuca21/background-playlist-ha).
+For issues, please check the [GitHub repository](https://github.com/SolusCado/Background-Playlist).

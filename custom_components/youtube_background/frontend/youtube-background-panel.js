@@ -32,6 +32,28 @@ class YouTubeBackgroundPanel extends HTMLElement {
     return this._hass;
   }
 
+  _toBoolean(value, defaultValue) {
+    if (value === undefined || value === null) {
+      return defaultValue;
+    }
+    if (typeof value === "boolean") {
+      return value;
+    }
+    if (typeof value === "number") {
+      return value !== 0;
+    }
+    if (typeof value === "string") {
+      const normalized = value.trim().toLowerCase();
+      if (["true", "1", "yes", "on"].includes(normalized)) {
+        return true;
+      }
+      if (["false", "0", "no", "off", ""].includes(normalized)) {
+        return false;
+      }
+    }
+    return Boolean(value);
+  }
+
   async _loadInitialData() {
     await Promise.all([this._loadMappings(), this._loadDashboards(), this._loadYouTubeApiStatus()]);
     this._entityOptions = Object.keys(this._hass?.states || {}).sort();
@@ -53,11 +75,11 @@ class YouTubeBackgroundPanel extends HTMLElement {
       const response = await this._hass.callWS({ type: "youtube_background/get_mappings" });
       this._mappings = (response.mappings || []).map((mapping) => ({
         ...mapping,
-        mute: mapping.mute !== false,
-        autoplay: mapping.autoplay !== false,
-        randomize: mapping.randomize !== false,
+        mute: this._toBoolean(mapping.mute, true),
+        autoplay: this._toBoolean(mapping.autoplay, true),
+        randomize: this._toBoolean(mapping.randomize, true),
         transition: mapping.transition || "fade",
-        debug: mapping.debug === true,
+        debug: this._toBoolean(mapping.debug, false),
         fade_corners: Array.isArray(mapping.fade_corners) ? mapping.fade_corners : [],
         fade_color: mapping.fade_color || "#000000",
         fade_opacity: Number.isFinite(Number(mapping.fade_opacity)) ? Number(mapping.fade_opacity) : 50,
@@ -68,7 +90,9 @@ class YouTubeBackgroundPanel extends HTMLElement {
         _playlistSearchResults: [],
         _playlistSearchError: "",
         _playlistSearchBusy: false,
+        _playlistResolveBusy: false,
         _playlistResolvedTitle: "",
+        _playlistResolvedDetails: "",
       }));
     } catch (error) {
       console.error(error);
@@ -196,7 +220,9 @@ class YouTubeBackgroundPanel extends HTMLElement {
       _playlistSearchResults: [],
       _playlistSearchError: "",
       _playlistSearchBusy: false,
+      _playlistResolveBusy: false,
       _playlistResolvedTitle: "",
+      _playlistResolvedDetails: "",
     });
     this._render();
   }
@@ -211,9 +237,16 @@ class YouTubeBackgroundPanel extends HTMLElement {
     mapping._playlistSearchResults = mapping._playlistSearchResults || [];
     mapping._playlistSearchError = mapping._playlistSearchError || "";
     mapping._playlistSearchBusy = false;
+    mapping._playlistResolveBusy = false;
     mapping._playlistResolvedTitle = mapping._playlistResolvedTitle || "";
+    mapping._playlistResolvedDetails = mapping._playlistResolvedDetails || "";
     this._stateSuggestions[mapping.id] = await this._extractStateSuggestions(mapping.entity_id);
     this._loadViewsForDashboard(mapping.dashboard_path);
+
+    if (this._youtubeApiConfigured && mapping.default_playlist_id && !mapping._playlistResolvedTitle && !mapping._playlistResolvedDetails) {
+      await this._resolvePlaylistField(mapping.id);
+    }
+
     this._render();
   }
 
@@ -253,6 +286,8 @@ class YouTubeBackgroundPanel extends HTMLElement {
 
     if (field === "default_playlist_id") {
       mapping._playlistResolvedTitle = "";
+      mapping._playlistResolvedDetails = "";
+      mapping._playlistResolveBusy = false;
     }
 
     this._render();
@@ -349,24 +384,45 @@ class YouTubeBackgroundPanel extends HTMLElement {
       return;
     }
 
+    mapping._playlistResolveBusy = true;
+    mapping._playlistResolvedTitle = "";
+    mapping._playlistResolvedDetails = "";
+    mapping._playlistSearchError = "";
+    this._render();
+
     try {
       const response = await this._hass.callWS({
         type: "youtube_background/resolve_playlist",
         value: rawValue,
       });
       const playlist = response?.playlist || {};
-      mapping[fieldName] = playlist.id || rawValue;
+      const resolvedId = playlist.id || rawValue;
+      mapping[fieldName] = resolvedId;
       mapping._playlistResolvedTitle = playlist.title || "";
+      const detailParts = [];
+      if (playlist.item_count != null) {
+        detailParts.push(`${playlist.item_count} video${playlist.item_count !== 1 ? "s" : ""}`);
+      }
+      if (playlist.estimated_duration_text) {
+        detailParts.push(`~${playlist.estimated_duration_text} total`);
+      }
+      mapping._playlistResolvedDetails = detailParts.join(" • ");
+      // If no API key, show the resolved ID as confirmation
+      if (!mapping._playlistResolvedTitle && !mapping._playlistResolvedDetails) {
+        mapping._playlistResolvedTitle = resolvedId;
+        mapping._playlistResolvedDetails = "Add a YouTube Data API key to see playlist title and duration.";
+      }
       mapping._playlistSearchError = "";
     } catch (error) {
       console.error(error);
       mapping._playlistSearchError = error?.message || "Could not validate playlist.";
     }
 
+    mapping._playlistResolveBusy = false;
     this._render();
   }
 
-  _applyPlaylistSearchResult(mappingId, playlistId) {
+  async _applyPlaylistSearchResult(mappingId, playlistId) {
     const mapping = this._mappings.find((item) => item.id === mappingId);
     if (!mapping) {
       return;
@@ -375,7 +431,21 @@ class YouTubeBackgroundPanel extends HTMLElement {
     const playlist = (mapping._playlistSearchResults || []).find((item) => item.id === playlistId);
     mapping.default_playlist_id = playlistId;
     mapping._playlistResolvedTitle = playlist?.title || "";
+    const detailParts = [];
+    if (playlist?.item_count != null) {
+      detailParts.push(`${playlist.item_count} items`);
+    }
+    if (playlist?.estimated_duration_text) {
+      detailParts.push(`~${playlist.estimated_duration_text}`);
+    }
+    mapping._playlistResolvedDetails = detailParts.join(" • ");
     mapping._playlistSearchError = "";
+
+    if (this._youtubeApiConfigured) {
+      await this._resolvePlaylistField(mappingId);
+      return;
+    }
+
     this._render();
   }
 
@@ -429,16 +499,16 @@ class YouTubeBackgroundPanel extends HTMLElement {
     const hasBottom = selected.has("bottom_left") || selected.has("bottom_right");
 
     if (hasRight) {
-      gradients.push(`linear-gradient(270deg, ${clear} 50%, ${solid} 100%)`);
+      gradients.push(`linear-gradient(to left, ${solid} 0%, ${clear} 50%)`);
     }
     if (hasBottom) {
-      gradients.push(`linear-gradient(0deg, ${clear} 50%, ${solid} 100%)`);
+      gradients.push(`linear-gradient(to top, ${solid} 0%, ${clear} 50%)`);
     }
     if (hasLeft) {
-      gradients.push(`linear-gradient(90deg, ${clear} 50%, ${solid} 100%)`);
+      gradients.push(`linear-gradient(to right, ${solid} 0%, ${clear} 50%)`);
     }
     if (hasTop) {
-      gradients.push(`linear-gradient(180deg, ${clear} 50%, ${solid} 100%)`);
+      gradients.push(`linear-gradient(to bottom, ${solid} 0%, ${clear} 50%)`);
     }
 
     return gradients.join(", ") || "none";
@@ -488,39 +558,200 @@ class YouTubeBackgroundPanel extends HTMLElement {
       return;
     }
 
-    const origin = window.location.origin || "";
-    const query = new URLSearchParams({
-      list: playlistId,
-      autoplay: mapping.autoplay !== false ? "1" : "0",
-      mute: mapping.mute !== false ? "1" : "0",
-      controls: "0",
-      loop: "1",
-      playlist: playlistId,
-      modestbranding: "1",
-      rel: "0",
-      playsinline: "1",
-      enablejsapi: "1",
-      origin,
-    });
-
-    if (mapping.randomize !== false) {
-      query.set("index", String(Math.floor(Math.random() * 50)));
-    }
+    // Destroy any existing preview player first
+    this._destroyPreviewPlayer();
 
     this._preview = {
       open: true,
-      embedUrl: `https://www.youtube.com/embed/videoseries?${query.toString()}`,
+      playlistId,
+      autoplay: this._toBoolean(mapping.autoplay, true),
+      mute: this._toBoolean(mapping.mute, true),
+      randomize: this._toBoolean(mapping.randomize, true),
       overlayGradient: this._buildOverlayGradient(mapping),
       transition: mapping.transition === "none" ? "none" : "fade",
     };
     this._error = "";
     this._render();
+    // Mount the IFrame API player after the DOM node exists
+    this._mountPreviewPlayer();
+  }
+
+  _destroyPreviewPlayer() {
+    if (this._previewPlayer) {
+      try { this._previewPlayer.destroy(); } catch (_) {}
+      this._previewPlayer = null;
+    }
+  }
+
+  _scheduleInitialShuffle(player, playlistId, autoplay, randomize) {
+    // Match the runtime's shuffle scheduling: setShuffle() + nextVideo() after delay
+    if (!randomize || !autoplay) return;
+    
+    setTimeout(() => {
+      // Only apply if player still exists and playlist hasn't changed
+      if (
+        this._previewPlayer === player &&
+        this._preview.open &&
+        this._preview.playlistId === playlistId &&
+        typeof player.nextVideo === "function"
+      ) {
+        player.nextVideo();
+      }
+    }, 700);
+  }
+
+  _installPreviewGestureHandlers(target) {
+    // Match the runtime's gesture handlers: single-click for playback, double-click for mute
+    let lastActivationAt = 0;
+
+    const attemptPlaybackFromGesture = () => {
+      const player = this._previewPlayer;
+      if (!player || typeof player.getPlayerState !== "function") {
+        return;
+      }
+
+      try {
+        if (player.getPlayerState() === YT.PlayerState.ENDED) {
+          if (this._preview.randomize) {
+            if (typeof player.nextVideo === "function") {
+              player.nextVideo();
+            } else {
+              player.playVideo();
+            }
+          } else if (typeof player.playVideoAt === "function") {
+            player.playVideoAt(0);
+          }
+        }
+
+        if (player.getPlayerState() !== YT.PlayerState.PLAYING) {
+          player.playVideo();
+        }
+      } catch (error) {
+        // Silently handle errors during gesture
+      }
+    };
+
+    const toggleMuteFromGesture = () => {
+      const player = this._previewPlayer;
+      if (!player?.isMuted || !player?.mute || !player?.unMute) return;
+
+      try {
+        player.isMuted() ? player.unMute() : player.mute();
+      } catch (error) {
+        // Silently handle errors during mute toggle
+      }
+    };
+
+    const handleActivation = (supportsNativeDoubleClick = false) => {
+      attemptPlaybackFromGesture();
+
+      const now = Date.now();
+      const isDoubleActivation = now - lastActivationAt < 400;
+      lastActivationAt = now;
+
+      if (isDoubleActivation && !supportsNativeDoubleClick) {
+        toggleMuteFromGesture();
+      }
+    };
+
+    const handleDoubleClick = () => {
+      attemptPlaybackFromGesture();
+      toggleMuteFromGesture();
+    };
+
+    // Install handlers: single-click/tap for playback, double-click for mute
+    if (window.PointerEvent) {
+      target.addEventListener("pointerdown", () => handleActivation(true), true);
+    } else {
+      target.addEventListener("mousedown", () => handleActivation(true), true);
+      target.addEventListener("touchstart", () => handleActivation(false), { capture: true, passive: true });
+    }
+    target.addEventListener("dblclick", handleDoubleClick, true);
+    target.addEventListener("keydown", (event) => {
+      if (event.key === "Enter" || event.key === " ") {
+        attemptPlaybackFromGesture();
+      }
+      if (event.key.toLowerCase() === "m") {
+        toggleMuteFromGesture();
+      }
+    }, true);
+  }
+
+  _mountPreviewPlayer() {
+    const target = this.shadowRoot.querySelector("#yt-preview-target");
+    if (!target) return;
+
+    const { playlistId, autoplay, mute, randomize } = this._preview;
+    const origin = window.location.origin || undefined;
+
+    const createPlayer = () => {
+      this._previewPlayer = new YT.Player(target, {
+        height: "100%",
+        width: "100%",
+        host: "https://www.youtube.com",
+        playerVars: {
+          autoplay: autoplay ? 1 : 0,
+          controls: 1,
+          mute: mute ? 1 : 0,
+          rel: 0,
+          modestbranding: 1,
+          playsinline: 1,
+          enablejsapi: 1,
+          origin,
+        },
+        events: {
+          onReady: (event) => {
+            event.target.setShuffle(randomize);
+            event.target.cuePlaylist({
+              list: playlistId,
+              listType: "playlist",
+              index: 0,
+              suggestedQuality: "highres",
+            });
+            if (autoplay) {
+              // Match runtime: schedule shuffle+nextVideo() instead of immediate playVideo()
+              if (randomize) {
+                this._scheduleInitialShuffle(event.target, playlistId, autoplay, randomize);
+              } else {
+                event.target.playVideo();
+              }
+            }
+            // Install gesture handlers after player is ready
+            this._installPreviewGestureHandlers(target);
+          },
+        },
+      });
+    };
+
+    if (typeof YT !== "undefined" && YT?.Player) {
+      createPlayer();
+    } else {
+      // Load the API script if not already present
+      if (!document.querySelector('script[src*="youtube.com/iframe_api"]')) {
+        const script = document.createElement("script");
+        script.src = "https://www.youtube.com/iframe_api";
+        document.head.appendChild(script);
+      }
+      // Chain onto whatever callback is already registered (runtime may have set one)
+      const existingCallback = window.onYouTubeIframeAPIReady;
+      window.onYouTubeIframeAPIReady = () => {
+        if (typeof existingCallback === "function") existingCallback();
+        // Only create if this preview is still open
+        if (this._preview.open && this._preview.playlistId === playlistId) {
+          createPlayer();
+        }
+      };
+    }
   }
 
   _closePreview() {
+    this._destroyPreviewPlayer();
     this._preview = {
       open: false,
-      embedUrl: "",
+      playlistId: "",
+      autoplay: true,
+      mute: true,
+      randomize: true,
       overlayGradient: "none",
       transition: "fade",
     };
@@ -547,17 +778,17 @@ class YouTubeBackgroundPanel extends HTMLElement {
 
     const payload = {
       id: mapping._isNew ? undefined : mapping.id,
-      enabled: !!mapping.enabled,
+      enabled: this._toBoolean(mapping.enabled, true),
       dashboard_path: (mapping.dashboard_path || "").trim(),
       view_path: (mapping.view_path || "").trim(),
       entity_id: (mapping.entity_id || "").trim(),
       default_playlist_id: (mapping.default_playlist_id || "").trim(),
       state_map: mapping.state_map || {},
-      mute: !!mapping.mute,
-      autoplay: !!mapping.autoplay,
-      randomize: !!mapping.randomize,
+      mute: this._toBoolean(mapping.mute, true),
+      autoplay: this._toBoolean(mapping.autoplay, true),
+      randomize: this._toBoolean(mapping.randomize, true),
       transition: mapping.transition || "fade",
-      debug: !!mapping.debug,
+      debug: this._toBoolean(mapping.debug, false),
       fade_corners: Array.isArray(mapping.fade_corners) ? mapping.fade_corners : [],
       fade_color: mapping.fade_color || "#000000",
       fade_opacity: Number.isFinite(Number(mapping.fade_opacity)) ? Number(mapping.fade_opacity) : 50,
@@ -625,7 +856,8 @@ class YouTubeBackgroundPanel extends HTMLElement {
         if (!mapping || !field) {
           return;
         }
-        mapping[field] = !mapping[field];
+        const defaultValue = field === "debug" ? false : true;
+        mapping[field] = !this._toBoolean(mapping[field], defaultValue);
         this._render();
       });
     });
@@ -653,11 +885,15 @@ class YouTubeBackgroundPanel extends HTMLElement {
         if (action === "remove-state") this._removeStateMapping(mappingId, stateKey);
         if (action === "search-playlists") await this._searchPlaylists(mappingId);
         if (action === "resolve-playlist") await this._resolvePlaylistField(mappingId);
-        if (action === "use-playlist") this._applyPlaylistSearchResult(mappingId, playlistId);
+        if (action === "use-playlist") await this._applyPlaylistSearchResult(mappingId, playlistId);
         if (action === "clear-entity") this._clearEntity(mappingId);
         if (action === "preview") this._openPreview(mappingId);
         if (action === "close-preview") this._closePreview();
       });
+    });
+
+    this.shadowRoot.querySelector(".preview-dialog")?.addEventListener("click", (event) => {
+      event.stopPropagation();
     });
 
     this.shadowRoot.querySelectorAll("input[data-field], select[data-field], textarea[data-field]").forEach((input) => {
@@ -810,9 +1046,10 @@ class YouTubeBackgroundPanel extends HTMLElement {
             <div>
               <div class="playlist-input-row">
                 <input type="text" value="${mapping.default_playlist_id || ""}" data-field="default_playlist_id" data-mapping-id="${mapping.id}" placeholder="Playlist URL or ID" />
-                <button type="button" data-action="resolve-playlist" data-mapping-id="${mapping.id}">Validate</button>
+                <button type="button" data-action="resolve-playlist" data-mapping-id="${mapping.id}" ${mapping._playlistResolveBusy ? "disabled" : ""}>${mapping._playlistResolveBusy ? "Validating…" : "Validate"}</button>
               </div>
-              ${mapping._playlistResolvedTitle ? `<div class="field-note">Selected: ${this._escapeHtml(mapping._playlistResolvedTitle)}</div>` : ""}
+              ${mapping._playlistResolvedTitle ? `<div class="field-note playlist-resolved-title">✓ ${this._escapeHtml(mapping._playlistResolvedTitle)}</div>` : ""}
+              ${mapping._playlistResolvedDetails ? `<div class="field-note playlist-resolved-details">${this._escapeHtml(mapping._playlistResolvedDetails)}</div>` : ""}
               ${this._youtubeApiConfigured ? `
                 <div class="playlist-search-row">
                   <input type="text" value="${mapping._playlistSearchQuery || ""}" data-field="_playlistSearchQuery" data-mapping-id="${mapping.id}" placeholder="Search YouTube playlists" />
@@ -851,8 +1088,8 @@ class YouTubeBackgroundPanel extends HTMLElement {
                 <span>Start Muted</span>
               </div>
               <div class="toggle-option">
-                <button class="toggle ${mapping.randomize !== false ? "on" : "off"}" data-toggle-field="randomize" data-mapping-id="${mapping.id}" type="button" role="switch" aria-checked="${mapping.randomize !== false}" aria-label="Randomize Playlist"></button>
-                <span>Randomize Playlist</span>
+                <button class="toggle ${mapping.randomize !== false ? "on" : "off"}" data-toggle-field="randomize" data-mapping-id="${mapping.id}" type="button" role="switch" aria-checked="${mapping.randomize !== false}" aria-label="Shuffle Playlist"></button>
+                <span>Shuffle Playlist</span>
               </div>
             </div>
 
@@ -957,6 +1194,8 @@ class YouTubeBackgroundPanel extends HTMLElement {
         .form-grid .entity-selector-host { display: block; width: 100%; margin-bottom: 6px; }
         .form-grid .entity-selector-host > * { display: block; width: 100%; }
         .field-note { color: var(--secondary-text-color); font-size: 0.9rem; }
+        .field-note.playlist-resolved-title { color: var(--success-color, #4caf50); font-weight: 600; }
+        .field-note.playlist-resolved-details { color: var(--secondary-text-color); font-size: 0.85rem; }
         .playlist-input-row, .playlist-search-row { display:grid; grid-template-columns: 1fr auto; gap:8px; margin-bottom: 6px; }
         .playlist-results { border: 1px solid var(--divider-color); border-radius: 8px; overflow: hidden; margin-bottom: 6px; }
         .playlist-result-item { display:flex; justify-content:space-between; align-items:center; gap:12px; padding: 10px; border-bottom: 1px solid var(--divider-color); }
@@ -998,47 +1237,43 @@ class YouTubeBackgroundPanel extends HTMLElement {
         .preview-dialog-backdrop {
           position: fixed;
           inset: 0;
-          background: transparent;
+          background: rgba(0, 0, 0, 0.56);
           display: flex;
           align-items: center;
           justify-content: center;
-          z-index: 1000;
+          z-index: 4000;
+          backdrop-filter: blur(2px);
         }
         .preview-dialog {
-          width: 100vw;
-          height: 100vh;
+          width: min(92vw, 1280px);
+          height: min(82vh, 720px);
+          max-height: calc(100vh - 48px);
           border: 0;
-          border-radius: 0;
+          border-radius: 14px;
           overflow: hidden;
           background: #000;
-          position: fixed;
-          inset: 0;
-          z-index: 2;
-          box-shadow: none;
+          position: relative;
+          box-shadow: 0 14px 48px rgba(0, 0, 0, 0.45);
         }
         .preview-scene {
           position: absolute;
           inset: 0;
         }
-        .preview-scene iframe {
-          aspect-ratio: 16 / 9;
-          height: 100vh;
-          width: initial;
-          position: absolute;
-          left: 50%;
-          transform: translateX(-50%);
+        .preview-scene iframe,
+        #yt-preview-target,
+        #yt-preview-target iframe {
+          width: 100%;
+          height: 100%;
           border: 0;
           pointer-events: none;
         }
         .preview-overlay {
-          position: fixed;
+          position: absolute;
           inset: 0;
-          width: 100vw;
-          height: 100vh;
           pointer-events: none;
           background: var(--preview-overlay-gradient, none);
           transition: opacity 0.6s ease-in-out;
-          z-index: 1;
+          z-index: 2;
         }
         .preview-overlay.no-transition {
           transition: none;
@@ -1057,15 +1292,15 @@ class YouTubeBackgroundPanel extends HTMLElement {
       ${this._error ? `<div class="error">${this._error}</div>` : ""}
       ${cards || `<div class="muted">No mappings configured yet.</div>`}
       ${this._preview.open ? `
-        <div class="preview-dialog-backdrop">
-          <div class="preview-overlay ${this._preview.transition === "none" ? "no-transition" : ""}" style="--preview-overlay-gradient: ${this._escapeHtml(this._preview.overlayGradient)};"></div>
+        <div class="preview-dialog-backdrop" data-action="close-preview">
           <div class="preview-dialog" role="dialog" aria-modal="true" aria-label="Background preview">
             <div class="preview-dialog-actions">
               <button type="button" data-action="close-preview">Close Preview</button>
             </div>
             <div class="preview-scene">
-              <iframe src="${this._escapeHtml(this._preview.embedUrl)}" allow="autoplay; encrypted-media; picture-in-picture" referrerpolicy="origin-when-cross-origin"></iframe>
+              <div id="yt-preview-target"></div>
             </div>
+            <div class="preview-overlay ${this._preview.transition === "none" ? "no-transition" : ""}" style="--preview-overlay-gradient: ${this._escapeHtml(this._preview.overlayGradient)};"></div>
           </div>
         </div>
       ` : ""}
