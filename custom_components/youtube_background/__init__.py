@@ -1,6 +1,7 @@
 """YouTube Background integration for Home Assistant."""
 from __future__ import annotations
 
+import json
 import logging
 import inspect
 from pathlib import Path
@@ -55,7 +56,22 @@ PANEL_URL_PATH = "youtube-background"
 PANEL_STATIC_URL = f"{STATIC_URL_BASE}/youtube-background-panel.js"
 RUNTIME_STATIC_URL = f"{STATIC_URL_BASE}/youtube-background-runtime.js"
 PANEL_JS = "youtube-background-panel"
-ASSET_VERSION = "1.0.55"
+
+
+def _load_asset_version() -> str:
+    """Load frontend asset version from manifest.json."""
+    manifest_path = Path(__file__).with_name("manifest.json")
+    try:
+        with manifest_path.open("r", encoding="utf-8") as manifest_file:
+            manifest = json.load(manifest_file)
+        version = str(manifest.get("version", "")).strip()
+        return version or "dev"
+    except Exception:
+        _LOGGER.exception("Failed to load asset version from %s", manifest_path)
+        return "dev"
+
+
+ASSET_VERSION = _load_asset_version()
 
 
 class YouTubeBackgroundData:
