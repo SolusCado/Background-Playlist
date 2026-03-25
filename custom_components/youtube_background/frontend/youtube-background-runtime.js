@@ -668,7 +668,7 @@
     window.IDEAS.yt.player = new YT.Player("yt-Iframe", {
       height: "100%",
       width: "100%",
-      host: "https://www.youtube.com",
+      host: "https://www.youtube-nocookie.com",
       playerVars: getPlayerVarsForInit(onInitBehavior, isSafari, origin, widgetReferrer),
       events: {
         onReady: function (event) {
