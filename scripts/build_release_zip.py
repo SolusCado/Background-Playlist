@@ -43,7 +43,7 @@ def main() -> None:
             if not file_path.is_file() or should_skip(file_path):
                 continue
 
-            arcname = file_path.relative_to(repo_root).as_posix()
+            arcname = file_path.relative_to(source_root).as_posix()
             archive.write(file_path, arcname)
             file_count += 1
 
