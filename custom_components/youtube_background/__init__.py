@@ -22,9 +22,16 @@ from homeassistant.helpers import config_validation as cv
 from homeassistant.helpers.storage import Store
 from homeassistant.helpers.typing import ConfigType
 
-from .api import YouTubeApiError, async_resolve_playlist, async_search_playlists, extract_playlist_id
+from .api import (
+    YouTubeApiError,
+    async_get_playlist_fallback_video,
+    async_resolve_playlist,
+    async_search_playlists,
+    extract_playlist_id,
+)
 from .const import (
     API_GET_YOUTUBE_API_STATUS,
+    API_GET_PLAYLIST_FALLBACK_VIDEO,
     CONF_AUTOPLAY,
     CONF_DASHBOARD_PATH,
     CONF_DEBUG,
@@ -351,6 +358,33 @@ async def websocket_resolve_playlist(hass: HomeAssistant, connection, msg):
     connection.send_result(msg["id"], {"playlist": {"id": normalized_id}})
 
 
+@websocket_api.websocket_command(
+    {
+        vol.Required("type"): f"{DOMAIN}/{API_GET_PLAYLIST_FALLBACK_VIDEO}",
+        vol.Required("playlist_id"): cv.string,
+    }
+)
+@websocket_api.async_response
+async def websocket_get_playlist_fallback_video(hass: HomeAssistant, connection, msg):
+    """Resolve an embeddable fallback video from a playlist."""
+    api_key = _get_youtube_api_key(hass)
+    if not api_key:
+        connection.send_error(
+            msg["id"],
+            "missing_api_key",
+            "Configure a YouTube Data API key in the integration options to enable fallback video resolution.",
+        )
+        return
+
+    try:
+        video_id = await async_get_playlist_fallback_video(hass, api_key, msg["playlist_id"])
+    except YouTubeApiError as err:
+        connection.send_error(msg["id"], "youtube_api_error", str(err))
+        return
+
+    connection.send_result(msg["id"], {"video_id": video_id or ""})
+
+
 async def async_register_websocket_commands(hass: HomeAssistant):
     """Register websocket commands."""
     websocket_api.async_register_command(hass, websocket_get_config)
@@ -361,6 +395,7 @@ async def async_register_websocket_commands(hass: HomeAssistant):
     websocket_api.async_register_command(hass, websocket_get_youtube_api_status)
     websocket_api.async_register_command(hass, websocket_search_playlists)
     websocket_api.async_register_command(hass, websocket_resolve_playlist)
+    websocket_api.async_register_command(hass, websocket_get_playlist_fallback_video)
 
 
 @websocket_api.websocket_command(

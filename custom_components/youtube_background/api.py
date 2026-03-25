@@ -121,6 +121,82 @@ async def async_resolve_playlist(
     }
 
 
+async def async_get_playlist_fallback_video(
+    hass: HomeAssistant,
+    api_key: str,
+    playlist_id: str,
+    max_scan_items: int = 100,
+) -> str | None:
+    """Return the first embeddable public video ID from a playlist.
+
+    This is used as a fallback when playlist embedding fails in some browsers.
+    """
+    normalized_playlist_id = extract_playlist_id(playlist_id)
+    if not normalized_playlist_id:
+        return None
+
+    candidate_ids: list[str] = []
+    page_token = ""
+
+    while len(candidate_ids) < max_scan_items:
+        remaining = max_scan_items - len(candidate_ids)
+        payload = await _async_request_json(
+            hass,
+            "/playlistItems",
+            {
+                "part": "contentDetails,status",
+                "playlistId": normalized_playlist_id,
+                "maxResults": min(50, remaining),
+                "pageToken": page_token,
+                "key": api_key,
+            },
+        )
+
+        items = payload.get("items", [])
+        for item in items:
+            playlist_item_status = item.get("status", {})
+            if playlist_item_status.get("privacyStatus") not in (None, "public"):
+                continue
+
+            content = item.get("contentDetails", {})
+            video_id = str(content.get("videoId") or "").strip()
+            if video_id:
+                candidate_ids.append(video_id)
+
+        page_token = payload.get("nextPageToken", "")
+        if not page_token or not items:
+            break
+
+    if not candidate_ids:
+        return None
+
+    for start in range(0, len(candidate_ids), 50):
+        chunk = candidate_ids[start : start + 50]
+        videos_payload = await _async_request_json(
+            hass,
+            "/videos",
+            {
+                "part": "status",
+                "id": ",".join(chunk),
+                "maxResults": 50,
+                "key": api_key,
+            },
+        )
+
+        for item in videos_payload.get("items", []):
+            status = item.get("status", {})
+            if status.get("privacyStatus") != "public":
+                continue
+            if status.get("embeddable") is False:
+                continue
+
+            video_id = str(item.get("id") or "").strip()
+            if video_id:
+                return video_id
+
+    return None
+
+
 async def async_estimate_playlist_duration(
     hass: HomeAssistant,
     api_key: str,

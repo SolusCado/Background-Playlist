@@ -134,7 +134,7 @@
   function applyOverlaySetting(config = currentConfig) {
     const playerEl = document.getElementById("background-player");
     if (!playerEl) return;
-    const gradient = buildCornerGradients(config);
+    const gradient = isSafariBrowser() ? "none" : buildCornerGradients(config);
     playerEl.style.setProperty("--yt-overlay-gradient", gradient);
     log(`Applied overlay gradient: ${gradient.substring(0, 50)}...`);
   }
@@ -149,6 +149,10 @@
   let safariGestureUnlocked = false;
   let pendingGesturePlayback = false;
   let safariPlaylistRetryCount = 0;
+  let safariSingleVideoFallbackAttemptedPlaylistId = null;
+  let safariDeferredPlaylistId = null;
+  let safariDeferredFallbackVideoId = null;
+  let safariPlaylistLoaded = false;
 
   function isSafariBrowser() {
     const ua = navigator.userAgent || "";
@@ -164,6 +168,7 @@
     iframe.setAttribute("playsinline", "1");
     iframe.setAttribute("webkit-playsinline", "true");
     iframe.setAttribute("allow", "autoplay; encrypted-media; picture-in-picture");
+    iframe.setAttribute("referrerpolicy", "strict-origin-when-cross-origin");
   }
 
   function getPlaylistStartIndex(behavior = getBehavior()) {
@@ -187,30 +192,137 @@
     });
   }
 
-  function getPlayerVarsForInit(behavior, isSafari, origin, widgetReferrer) {
-    if (isSafari) {
-      return {
-        autoplay: 0,
-        controls: 0,
-        modestbranding: 1,
-        rel: 0,
-        fs: 1,
-        mute: 1,
-        playsinline: 1,
-      };
+  function deferSafariPlaylistUntilGesture(playlistId) {
+    if (!isSafariBrowser()) return;
+    safariDeferredPlaylistId = playlistId || null;
+    safariPlaylistLoaded = false;
+    pendingGesturePlayback = false;
+    console.info("[YouTube Background] Safari defer playlist load until gesture", {
+      playlistId: safariDeferredPlaylistId,
+    });
+  }
+
+  function loadSafariDeferredPlaylist(player, source = "gesture") {
+    if (!isSafariBrowser() || !player) return false;
+
+    // Handle deferred single-video fallback first (set when 153 fires before gesture)
+    if (safariDeferredFallbackVideoId) {
+      const videoId = safariDeferredFallbackVideoId;
+      safariDeferredFallbackVideoId = null;
+      safariPlaylistLoaded = true;
+      pendingGesturePlayback = false;
+      const behavior = getBehavior();
+      console.info("[YouTube Background] Safari playing deferred fallback video from gesture", {
+        source,
+        videoId,
+      });
+      playSingleVideoFallback(player, videoId, behavior);
+      return true;
     }
 
-    return {
-      autoplay: behavior.autoplay ? 1 : 0,
+    const playlistId = safariDeferredPlaylistId || window.IDEAS?.yt?.currentPlaylistId;
+    if (!playlistId) return false;
+
+    const behavior = getBehavior();
+    const index = getPlaylistStartIndex(behavior);
+
+    try {
+      loadPlaylistForPlayer(player, playlistId, behavior, {
+        index,
+        forceCue: false,
+      });
+      applyMuteSetting(player, behavior);
+      if (behavior.autoplay && typeof player.playVideo === "function") {
+        player.playVideo();
+      }
+
+      safariDeferredPlaylistId = null;
+      safariPlaylistLoaded = true;
+      pendingGesturePlayback = false;
+      console.info("[YouTube Background] Safari playlist loaded from gesture", {
+        source,
+        playlistId,
+        index,
+      });
+      return true;
+    } catch (error) {
+      console.warn("[YouTube Background] Safari deferred load failed", {
+        source,
+        playlistId,
+        error,
+      });
+      return false;
+    }
+  }
+
+  async function resolveFallbackVideoId(playlistId) {
+    const hass = getHass();
+    if (!hass || typeof hass.callWS !== "function" || !playlistId) {
+      return null;
+    }
+
+    try {
+      const response = await hass.callWS({
+        type: "youtube_background/get_playlist_fallback_video",
+        playlist_id: playlistId,
+      });
+      const videoId = String(response?.video_id || "").trim();
+      return videoId || null;
+    } catch (error) {
+      log("Fallback video lookup failed", error);
+      return null;
+    }
+  }
+
+  function playSingleVideoFallback(player, videoId, behavior) {
+    if (!player || !videoId) return false;
+
+    try {
+      const fallbackPayload = { videoId, suggestedQuality: "highres" };
+      if (behavior.autoplay && typeof player.loadVideoById === "function") {
+        player.loadVideoById(fallbackPayload);
+      } else if (typeof player.cueVideoById === "function") {
+        player.cueVideoById(fallbackPayload);
+      } else {
+        return false;
+      }
+
+      applyMuteSetting(player, behavior);
+      if (behavior.autoplay && typeof player.playVideo === "function") {
+        player.playVideo();
+      }
+
+      return true;
+    } catch (error) {
+      log("Single-video fallback playback failed", error);
+      return false;
+    }
+  }
+
+  function getPlayerVarsForInit(behavior, isSafari, origin, widgetReferrer) {
+    const base = {
       controls: 0,
       modestbranding: 1,
       rel: 0,
       fs: 1,
-      mute: behavior.mute ? 1 : 0,
       playsinline: 1,
       enablejsapi: 1,
       origin,
       widget_referrer: widgetReferrer,
+    };
+
+    if (isSafari) {
+      return {
+        ...base,
+        autoplay: 0,
+        mute: 1,
+      };
+    }
+
+    return {
+      ...base,
+      autoplay: behavior.autoplay ? 1 : 0,
+      mute: behavior.mute ? 1 : 0,
     };
   }
 
@@ -404,16 +516,7 @@
     playerEl.classList.toggle("visible", Boolean(visible));
   }
 
-  function logGestureEvent(eventName, details = {}) {
-    console.info("[YouTube Background] Gesture event fired", {
-      event: eventName,
-      ts: Date.now(),
-      ...details,
-    });
-  }
-
   function attemptPlaybackFromGesture(source = "unknown") {
-    logGestureEvent("attemptPlaybackFromGesture", { source });
     pendingGesturePlayback = true;
     safariGestureUnlocked = true;
 
@@ -427,6 +530,17 @@
     const gestureBehavior = getBehavior();
 
     try {
+      if (
+        isSafariBrowser() &&
+        !safariPlaylistLoaded &&
+        (window.IDEAS?.yt?.currentPlaylistId || safariDeferredFallbackVideoId)
+      ) {
+        const started = loadSafariDeferredPlaylist(player, source);
+        if (started) {
+          return;
+        }
+      }
+
       if (player.getPlayerState() === YT.PlayerState.ENDED) {
         setPlayerVisibility(false);
         if (gestureBehavior.randomize) {
@@ -475,7 +589,6 @@
     gestureHandlersInstalled = true;
 
     const handleActivation = (supportsNativeDoubleClick = false, source = "activation") => {
-      logGestureEvent(source, { supportsNativeDoubleClick });
       attemptPlaybackFromGesture(source);
 
       const now = Date.now();
@@ -488,7 +601,6 @@
     };
 
     const handleDoubleClick = () => {
-      logGestureEvent("dblclick");
       attemptPlaybackFromGesture("dblclick");
       toggleMuteFromGesture();
     };
@@ -504,11 +616,9 @@
     window.addEventListener("dblclick", handleDoubleClick, true);
     window.addEventListener("keydown", (event) => {
       if (event.key === "Enter" || event.key === " ") {
-        logGestureEvent("keydown", { key: event.key });
         attemptPlaybackFromGesture("keydown");
       }
       if (event.key.toLowerCase() === "m") {
-        logGestureEvent("keydown", { key: event.key });
         toggleMuteFromGesture();
       }
     }, true);
@@ -516,11 +626,9 @@
     const body = document.body;
     if (body) {
       const bodyPointerFallback = () => {
-        logGestureEvent("body.pointerdown");
         attemptPlaybackFromGesture("body.pointerdown");
       };
       const bodyTouchFallback = () => {
-        logGestureEvent("body.touchstart");
         attemptPlaybackFromGesture("body.touchstart");
       };
 
@@ -579,8 +687,16 @@
   }
 
   function ensurePlayerContainer() {
+    const applySafariNoOpacity = (element) => {
+      if (!element || !isSafariBrowser()) return;
+      element.classList.add("safari-no-opacity");
+      element.style.setProperty("opacity", "1", "important");
+      element.style.setProperty("pointer-events", "auto", "important");
+    };
+
     let ytPlayer = document.getElementById("background-player");
     if (ytPlayer) {
+      applySafariNoOpacity(ytPlayer);
       return ytPlayer;
     }
 
@@ -588,6 +704,7 @@
       id: "background-player",
       innerHTML: "<div id='yt-Iframe'></div>"
     });
+    applySafariNoOpacity(ytPlayer);
     document.body.appendChild(ytPlayer);
 
     if (!document.getElementById("youtube-background-player-style")) {
@@ -608,6 +725,15 @@
           }
           #background-player.visible {
             opacity: 1;
+          }
+          #background-player.safari-no-opacity {
+            opacity: 1;
+            visibility: visible !important;
+            pointer-events: auto !important;
+          }
+          #background-player.safari-no-opacity > #yt-Iframe,
+          #background-player.safari-no-opacity iframe {
+            pointer-events: auto !important;
           }
           #background-player.no-transition {
             transition: none;
@@ -686,22 +812,19 @@
               playlistId: currentId,
               startIndex,
             });
-            event.target.cuePlaylist({
-              list: currentId,
-              listType: "playlist",
-              index: startIndex,
-              suggestedQuality: "highres"
-            });
+            deferSafariPlaylistUntilGesture(currentId);
           } else {
             loadPlaylistForPlayer(event.target, currentId, readyBehavior, {
               index: startIndex,
               forceCue: false,
             });
           }
-          if (typeof event.target.setShuffle === "function") {
+          if (!isSafari && typeof event.target.setShuffle === "function") {
             event.target.setShuffle(readyBehavior.randomize);
           }
-          event.target.setPlaybackQuality("highres");
+          if (!isSafari) {
+            event.target.setPlaybackQuality("highres");
+          }
           if (isSafari) {
             if (typeof event.target.mute === "function") {
               event.target.mute();
@@ -711,14 +834,16 @@
           }
           if (readyBehavior.autoplay) {
             if (isSafari) {
-              event.target.playVideo();
+              console.info("[YouTube Background] Safari autoplay deferred until gesture", {
+                playlistId: currentId,
+              });
             } else if (readyBehavior.randomize) {
               scheduleInitialShuffle(event.target, currentId, readyBehavior);
             } else {
               event.target.playVideo();
             }
 
-            if (pendingGesturePlayback) {
+            if (pendingGesturePlayback && (!isSafari || safariGestureUnlocked)) {
               setTimeout(() => {
                 try {
                   applyMuteSetting(event.target, readyBehavior);
@@ -741,6 +866,10 @@
           }
 
           if (event.data === YT.PlayerState.PLAYING) {
+            if (safari) {
+              safariPlaylistLoaded = true;
+              safariDeferredPlaylistId = null;
+            }
             applyMuteSetting(event.target, stateBehavior);
             showPlayer();
           } else if (event.data === YT.PlayerState.ENDED) {
@@ -784,8 +913,16 @@
           const safari = isSafariBrowser();
           const playlistId = window.IDEAS?.yt?.currentPlaylistId;
 
+          if (safari && !safariGestureUnlocked && !safariPlaylistLoaded) {
+            console.info("[YouTube Background] Safari pre-gesture player error ignored", {
+              playlistId,
+              errorCode,
+            });
+            return;
+          }
+
           // Error 101/150/153: video owner has blocked embedded playback.
-          // 153 is a hard embedding block — retrying the same playlist is futile.
+          // 153 is treated as a hard block for playlist playback.
           // 101/150 can occasionally be transient (e.g. playlist index lands on a
           // blocked video), so we skip forward to a new random index instead.
           const isEmbedBlock = [101, 150, 153].includes(errorCode);
@@ -801,7 +938,42 @@
           });
 
           if (isHardBlock) {
-            // Content is permanently blocked for embedding — nothing to retry.
+            // On Safari, optionally fallback to one embeddable video from the same
+            // playlist when a Data API key is configured.
+            if (
+              safari &&
+              playlistId &&
+              safariSingleVideoFallbackAttemptedPlaylistId !== playlistId
+            ) {
+              safariSingleVideoFallbackAttemptedPlaylistId = playlistId;
+              console.warn("[YouTube Background] Attempting single-video fallback", {
+                playlistId,
+                errorCode,
+              });
+
+              resolveFallbackVideoId(playlistId).then((videoId) => {
+                if (!videoId) {
+                  console.warn(
+                    "[YouTube Background] No embeddable fallback video found for playlist",
+                    { playlistId }
+                  );
+                  hidePlayer();
+                  return;
+                }
+
+                // Defer playback until user gesture — same as playlist deferral
+                safariDeferredFallbackVideoId = videoId;
+                safariDeferredPlaylistId = null;
+                safariPlaylistLoaded = false;
+                pendingGesturePlayback = true;
+                console.info("[YouTube Background] Safari fallback video deferred until gesture", {
+                  playlistId,
+                  videoId,
+                });
+              });
+              return;
+            }
+
             console.warn(
               "[YouTube Background] Error 153: embedding blocked by content owner. " +
               "Choose a playlist whose videos allow embedding."
@@ -857,14 +1029,17 @@
       typeof window.IDEAS.yt.player.getPlayerState === "function" &&
       window.IDEAS.yt.currentPlaylistId === playlistId
     ) {
+      const safari = isSafariBrowser();
       applyTransitionSetting();
       applyOverlaySetting();
-      if (typeof window.IDEAS.yt.player.setShuffle === "function") {
+      if (!safari && typeof window.IDEAS.yt.player.setShuffle === "function") {
         window.IDEAS.yt.player.setShuffle(behavior.randomize);
       }
       applyMuteSetting(window.IDEAS.yt.player);
       if (behavior.autoplay) {
-        if (behavior.randomize) {
+        if (safari) {
+          deferSafariPlaylistUntilGesture(playlistId);
+        } else if (behavior.randomize) {
           scheduleInitialShuffle(window.IDEAS.yt.player, playlistId, behavior);
         } else if (typeof window.IDEAS.yt.player.playVideoAt === "function") {
           window.IDEAS.yt.player.playVideoAt(0);
@@ -882,18 +1057,28 @@
       typeof window.IDEAS.yt.player.loadPlaylist === "function" &&
       window.IDEAS.yt.currentPlaylistId !== playlistId
     ) {
+      const safari = isSafariBrowser();
       log(`Switching to playlist ${playlistId}`);
-      loadPlaylistForPlayer(window.IDEAS.yt.player, playlistId, behavior, {
-        index: getPlaylistStartIndex(behavior),
-        forceCue: isSafariBrowser(),
-      });
-      if (typeof window.IDEAS.yt.player.setShuffle === "function") {
+      if (safari) {
+        window.IDEAS.yt.currentPlaylistId = playlistId;
+        deferSafariPlaylistUntilGesture(playlistId);
+      } else {
+        loadPlaylistForPlayer(window.IDEAS.yt.player, playlistId, behavior, {
+          index: getPlaylistStartIndex(behavior),
+          forceCue: false,
+        });
+      }
+      if (!safari && typeof window.IDEAS.yt.player.setShuffle === "function") {
         window.IDEAS.yt.player.setShuffle(behavior.randomize);
       }
       applyMuteSetting(window.IDEAS.yt.player);
       applyOverlaySetting();
       if (behavior.autoplay) {
-        if (behavior.randomize) {
+        if (safari) {
+          console.info("[YouTube Background] Safari switched playlist, waiting for gesture", {
+            playlistId,
+          });
+        } else if (behavior.randomize) {
           scheduleInitialShuffle(window.IDEAS.yt.player, playlistId, behavior);
         } else {
           window.IDEAS.yt.player.playVideo();
@@ -1015,7 +1200,7 @@
 
   function waitForLovelace(timeout = 30000) {
     console.info(
-      `%c YouTube Playlist Background %c v2026.03.24 `,
+      `%c YouTube Playlist Background %c v2026.03.25 `,
       'background: #555; color: white; border-radius: 999px 0 0 999px; padding: 2px 10px; font-weight: 500;',
       'background: #d9534f; color: white; border-radius: 0 999px 999px 0; padding: 2px 10px; font-weight: 500; margin-left: -4px;'
     );
