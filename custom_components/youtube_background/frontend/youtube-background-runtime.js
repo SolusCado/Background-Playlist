@@ -781,38 +781,63 @@
         onError: function (event) {
           const errorCode = Number(event?.data);
           const behavior = getBehavior();
-          console.warn("[YouTube Background] Player error", event?.data, {
-            playlistId: window.IDEAS?.yt?.currentPlaylistId,
+          const safari = isSafariBrowser();
+          const playlistId = window.IDEAS?.yt?.currentPlaylistId;
+
+          // Error 101/150/153: video owner has blocked embedded playback.
+          // 153 is a hard embedding block — retrying the same playlist is futile.
+          // 101/150 can occasionally be transient (e.g. playlist index lands on a
+          // blocked video), so we skip forward to a new random index instead.
+          const isEmbedBlock = [101, 150, 153].includes(errorCode);
+          const isHardBlock = errorCode === 153;
+
+          console.warn("[YouTube Background] Player error", errorCode, {
+            playlistId,
+            isEmbedBlock,
+            isHardBlock,
+            retryCount: safariPlaylistRetryCount,
             href: window.location.href,
-            safari: isSafariBrowser()
+            safari,
           });
 
+          if (isHardBlock) {
+            // Content is permanently blocked for embedding — nothing to retry.
+            console.warn(
+              "[YouTube Background] Error 153: embedding blocked by content owner. " +
+              "Choose a playlist whose videos allow embedding."
+            );
+            hidePlayer();
+            return;
+          }
+
           if (
-            isSafariBrowser() &&
-            [101, 150, 153].includes(errorCode) &&
+            isEmbedBlock &&
             safariPlaylistRetryCount < 2 &&
-            window.IDEAS?.yt?.currentPlaylistId
+            playlistId
           ) {
+            // 101/150: try skipping to a different index. Works on both Safari
+            // and non-Safari since embedded-block errors can hit any browser.
             safariPlaylistRetryCount += 1;
             const retryIndex = getPlaylistStartIndex(behavior);
-            console.warn("[YouTube Background] Safari retry", {
+            console.warn("[YouTube Background] Embed-block retry (skip to new index)", {
               attempt: safariPlaylistRetryCount,
               retryIndex,
-              playlistId: window.IDEAS.yt.currentPlaylistId,
+              playlistId,
+              safari,
             });
 
             setTimeout(() => {
               try {
-                loadPlaylistForPlayer(event.target, window.IDEAS.yt.currentPlaylistId, behavior, {
+                loadPlaylistForPlayer(event.target, playlistId, behavior, {
                   index: retryIndex,
-                  forceCue: true,
+                  forceCue: safari,
                 });
                 applyMuteSetting(event.target, behavior);
                 if (behavior.autoplay) {
                   event.target.playVideo();
                 }
               } catch (error) {
-                console.warn("[YouTube Background] Safari retry failed", error);
+                console.warn("[YouTube Background] Embed-block retry failed", error);
               }
             }, 500);
           }
