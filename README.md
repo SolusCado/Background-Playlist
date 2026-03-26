@@ -35,6 +35,23 @@ This integration allows you to set YouTube playlists as backgrounds for your Lov
 4. Restart Home Assistant.
 5. Go to **Settings → Devices & Services** and click **Create Integration** to add **YouTube Background**.
 
+### Option 3: Mac Kiosk App
+
+For macOS users who want to run Home Assistant in kiosk mode, this repository also includes a packaged desktop app:
+
+- Release asset: `Desktop-Kiosk-macOS-universal.zip`
+- Checksum asset: `Desktop-Kiosk-macOS-universal.zip.sha256`
+
+This app is intended for dedicated wall displays, desktops, or always-on dashboard screens where you want Home Assistant to launch in a focused kiosk-style window. It also works well for running your Home Assistant dashboard as your desktop wallpaper on macOS.
+
+#### Launch the Mac kiosk app
+
+1. Open the latest [GitHub release](https://github.com/SolusCado/Background-Playlist/releases/latest) and download `Desktop-Kiosk-macOS-universal.zip`.
+2. Extract the ZIP archive.
+3. Move `Desktop Kiosk.app` into your `Applications` folder if you want to keep it installed.
+4. Open the app and point it at your Home Assistant instance.
+5. If macOS warns that the app was downloaded from the internet, open it from **System Settings → Privacy & Security** or by Control-clicking the app and choosing **Open**.
+
 ### API Key Setup (Optional but Recommended)
 
 An API key is optional, but strongly recommended for enhanced functionality (playlist search, validation, metadata).
