@@ -361,7 +361,6 @@
       fade_color: config.fade_color ?? null,
       fade_opacity: config.fade_opacity ?? null,
       fade_corners: Array.isArray(config.fade_corners) ? [...config.fade_corners].sort() : [],
-      fullscreen: config.fullscreen ?? null,
     });
   }
 
@@ -511,29 +510,6 @@
     const playerEl = document.getElementById("background-player");
     if (playerEl && !playerEl.classList.contains("visible")) {
       playerEl.classList.add("visible");
-    }
-  }
-
-  function attemptFullscreen(config) {
-    const playerEl = document.getElementById("background-player");
-    if (!playerEl || !config?.fullscreen) {
-      return;
-    }
-
-    const fullscreenMethods = [
-      playerEl.requestFullscreen,
-      playerEl.webkitRequestFullscreen,
-      playerEl.mozRequestFullScreen,
-      playerEl.msRequestFullscreen,
-    ].filter(Boolean);
-
-    for (const method of fullscreenMethods) {
-      try {
-        method.call(playerEl);
-        return;
-      } catch (error) {
-        console.warn("[YouTube Background] Fullscreen request failed", error);
-      }
     }
   }
 
@@ -997,7 +973,6 @@
             }
             applyMuteSetting(event.target, stateBehavior);
             showPlayer();
-            attemptFullscreen(stateBehavior);
             removeGestureHandlers();
             installPlaybackMuteHandlers();
           } else if (event.data === YT.PlayerState.ENDED) {
