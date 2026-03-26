@@ -672,20 +672,20 @@
     if (!config?.fullscreen || fullscreenAttempted) return;
     fullscreenAttempted = true;
 
-    const playerEl = document.getElementById("background-player");
-    if (!playerEl) return;
+    const element = document.documentElement; // Request fullscreen on entire document
+    if (!element) return;
 
     const methods = [
-      playerEl.requestFullscreen,
-      playerEl.webkitRequestFullscreen,
-      playerEl.mozRequestFullScreen,
-      playerEl.msRequestFullscreen,
+      element.requestFullscreen,
+      element.webkitRequestFullscreen,
+      element.mozRequestFullScreen,
+      element.msRequestFullscreen,
     ].filter(Boolean);
 
     for (const method of methods) {
       try {
-        method.call(playerEl);
-        console.info("[YouTube Background] Fullscreen requested");
+        method.call(element);
+        console.info("[YouTube Background] Browser fullscreen requested");
         return true;
       } catch (error) {
         console.warn("[YouTube Background] Fullscreen request failed", error);
