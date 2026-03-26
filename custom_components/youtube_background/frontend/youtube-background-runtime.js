@@ -666,6 +666,28 @@
     };
   }
 
+  function requestFullscreen() {
+    const playerEl = document.getElementById("background-player");
+    if (!playerEl) return;
+
+    const methods = [
+      playerEl.requestFullscreen,
+      playerEl.webkitRequestFullscreen,
+      playerEl.mozRequestFullScreen,
+      playerEl.msRequestFullscreen,
+    ].filter(Boolean);
+
+    for (const method of methods) {
+      try {
+        method.call(playerEl);
+        return true;
+      } catch (error) {
+        console.warn("[YouTube Background] Fullscreen request failed", error);
+      }
+    }
+    return false;
+  }
+
   function installPlaybackMuteHandlers() {
     if (playbackMuteHandlersInstalled) return;
     playbackMuteHandlersInstalled = true;
@@ -675,8 +697,11 @@
     };
 
     const keydownHandler = (event) => {
-      if (event.key.toLowerCase() === "m") {
+      const key = event.key.toLowerCase();
+      if (key === "m") {
         toggleMuteFromGesture();
+      } else if (key === "f") {
+        requestFullscreen();
       }
     };
 
