@@ -124,7 +124,6 @@ class YouTubeBackgroundPanel extends HTMLElement {
         fade_corners: Array.isArray(mapping.fade_corners) ? mapping.fade_corners : [],
         fade_color: mapping.fade_color || "#000000",
         fade_opacity: Number.isFinite(Number(mapping.fade_opacity)) ? Number(mapping.fade_opacity) : 50,
-        fullscreen: this._toBoolean(mapping.fullscreen, false),
         _isEditing: false,
         _newStateKey: "",
         _newStatePlaylist: "",
@@ -256,7 +255,6 @@ class YouTubeBackgroundPanel extends HTMLElement {
       fade_corners: [],
       fade_color: "#000000",
       fade_opacity: 50,
-      fullscreen: false,
       _isEditing: true,
       _isNew: true,
       _newStateKey: "",
@@ -935,7 +933,6 @@ class YouTubeBackgroundPanel extends HTMLElement {
       fade_corners: Array.isArray(mapping.fade_corners) ? mapping.fade_corners : [],
       fade_color: mapping.fade_color || "#000000",
       fade_opacity: Number.isFinite(Number(mapping.fade_opacity)) ? Number(mapping.fade_opacity) : 50,
-      fullscreen: this._toBoolean(mapping.fullscreen, false),
     };
 
     if (!payload.dashboard_path || !payload.default_playlist_id) {
@@ -1304,10 +1301,6 @@ class YouTubeBackgroundPanel extends HTMLElement {
               <div class="toggle-option">
                 <button class="toggle ${mapping.transition !== "none" ? "on" : "off"}" data-action="toggle-transition" data-mapping-id="${mapping.id}" type="button" role="switch" aria-checked="${mapping.transition !== "none"}" aria-label="Fade Transition"></button>
                 <span>Fade Transition</span>
-              </div>
-              <div class="toggle-option">
-                <button class="toggle ${mapping.fullscreen ? "on" : "off"}" data-toggle-field="fullscreen" data-mapping-id="${mapping.id}" type="button" role="switch" aria-checked="${mapping.fullscreen}" aria-label="Fullscreen"></button>
-                <span>Fullscreen</span>
               </div>
             </div>
 

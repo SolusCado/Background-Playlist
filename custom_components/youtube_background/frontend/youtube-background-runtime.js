@@ -12,8 +12,6 @@
     pendingShufflePlaylistId: null
   };
 
-  let fullscreenAttempted = false;
-
   function toBoolean(value, defaultValue) {
     if (value === undefined || value === null) return defaultValue;
     if (typeof value === "boolean") return value;
@@ -147,9 +145,6 @@
   let lastResolvedState = null;
   let currentConfigSignature = "null";
   let gestureHandlersInstalled = false;
-  let gestureHandlerRefs = null;
-  let playbackMuteHandlersInstalled = false;
-  let playbackMuteHandlerRefs = null;
   let lastActivationAt = 0;
   let safariGestureUnlocked = false;
   let pendingGesturePlayback = false;
@@ -592,10 +587,6 @@
   function installGestureHandlers() {
     if (gestureHandlersInstalled) return;
     gestureHandlersInstalled = true;
-    removePlaybackMuteHandlers();
-
-    const touchListenerOptions = { capture: true, passive: true };
-    const bodyPointerOptions = { capture: true };
 
     const handleActivation = (supportsNativeDoubleClick = false, source = "activation") => {
       attemptPlaybackFromGesture(source);
@@ -609,158 +600,44 @@
       }
     };
 
-    const pointerHandler = () => handleActivation(true, "pointerdown");
-    const mouseHandler = () => handleActivation(true, "mousedown");
-    const touchStartHandler = () => handleActivation(false, "touchstart");
-    const clickHandler = () => handleActivation(true, "click");
-    const touchEndHandler = () => handleActivation(false, "touchend");
-    const doubleClickHandler = () => {
+    const handleDoubleClick = () => {
       attemptPlaybackFromGesture("dblclick");
       toggleMuteFromGesture();
     };
-    const keydownHandler = (event) => {
+
+    if (window.PointerEvent) {
+      window.addEventListener("pointerdown", () => handleActivation(true, "pointerdown"), true);
+    } else {
+      window.addEventListener("mousedown", () => handleActivation(true, "mousedown"), true);
+      window.addEventListener("touchstart", () => handleActivation(false, "touchstart"), { capture: true, passive: true });
+    }
+    window.addEventListener("click", () => handleActivation(true, "click"), true);
+    window.addEventListener("touchend", () => handleActivation(false, "touchend"), { capture: true, passive: true });
+    window.addEventListener("dblclick", handleDoubleClick, true);
+    window.addEventListener("keydown", (event) => {
       if (event.key === "Enter" || event.key === " ") {
         attemptPlaybackFromGesture("keydown");
       }
       if (event.key.toLowerCase() === "m") {
         toggleMuteFromGesture();
       }
-    };
-    const bodyPointerFallback = () => {
-      attemptPlaybackFromGesture("body.pointerdown");
-    };
-    const bodyTouchFallback = () => {
-      attemptPlaybackFromGesture("body.touchstart");
-    };
-
-    if (window.PointerEvent) {
-      window.addEventListener("pointerdown", pointerHandler, true);
-    } else {
-      window.addEventListener("mousedown", mouseHandler, true);
-      window.addEventListener("touchstart", touchStartHandler, touchListenerOptions);
-    }
-    window.addEventListener("click", clickHandler, true);
-    window.addEventListener("touchend", touchEndHandler, touchListenerOptions);
-    window.addEventListener("dblclick", doubleClickHandler, true);
-    window.addEventListener("keydown", keydownHandler, true);
+    }, true);
 
     const body = document.body;
     if (body) {
+      const bodyPointerFallback = () => {
+        attemptPlaybackFromGesture("body.pointerdown");
+      };
+      const bodyTouchFallback = () => {
+        attemptPlaybackFromGesture("body.touchstart");
+      };
+
       if (window.PointerEvent) {
-        body.addEventListener("pointerdown", bodyPointerFallback, bodyPointerOptions);
+        body.addEventListener("pointerdown", bodyPointerFallback, { capture: true });
       } else {
-        body.addEventListener("touchstart", bodyTouchFallback, touchListenerOptions);
+        body.addEventListener("touchstart", bodyTouchFallback, { capture: true, passive: true });
       }
     }
-
-    gestureHandlerRefs = {
-      pointerHandler,
-      mouseHandler,
-      touchStartHandler,
-      clickHandler,
-      touchEndHandler,
-      doubleClickHandler,
-      keydownHandler,
-      bodyPointerFallback,
-      bodyTouchFallback,
-      touchListenerOptions,
-      bodyPointerOptions,
-    };
-  }
-
-  function requestFullscreen(config) {
-    if (!config?.fullscreen || fullscreenAttempted) return;
-    fullscreenAttempted = true;
-
-    const element = document.documentElement; // Request fullscreen on entire document
-    if (!element) return;
-
-    const methods = [
-      element.requestFullscreen,
-      element.webkitRequestFullscreen,
-      element.mozRequestFullScreen,
-      element.msRequestFullscreen,
-    ].filter(Boolean);
-
-    for (const method of methods) {
-      try {
-        method.call(element);
-        console.info("[YouTube Background] Browser fullscreen requested");
-        return true;
-      } catch (error) {
-        console.warn("[YouTube Background] Fullscreen request failed", error);
-      }
-    }
-    return false;
-  }
-
-  function installPlaybackMuteHandlers() {
-    if (playbackMuteHandlersInstalled) return;
-    playbackMuteHandlersInstalled = true;
-
-    const doubleClickHandler = () => {
-      toggleMuteFromGesture();
-    };
-
-    const keydownHandler = (event) => {
-      if (event.key.toLowerCase() === "m") {
-        toggleMuteFromGesture();
-      }
-    };
-
-    window.addEventListener("dblclick", doubleClickHandler, true);
-    window.addEventListener("keydown", keydownHandler, true);
-
-    playbackMuteHandlerRefs = {
-      doubleClickHandler,
-      keydownHandler,
-    };
-  }
-
-  function removeGestureHandlers() {
-    if (!gestureHandlersInstalled) return;
-
-    const refs = gestureHandlerRefs;
-    if (!refs) {
-      gestureHandlersInstalled = false;
-      return;
-    }
-
-    if (window.PointerEvent) {
-      window.removeEventListener("pointerdown", refs.pointerHandler, true);
-    } else {
-      window.removeEventListener("mousedown", refs.mouseHandler, true);
-      window.removeEventListener("touchstart", refs.touchStartHandler, refs.touchListenerOptions);
-    }
-    window.removeEventListener("click", refs.clickHandler, true);
-    window.removeEventListener("touchend", refs.touchEndHandler, refs.touchListenerOptions);
-    window.removeEventListener("dblclick", refs.doubleClickHandler, true);
-    window.removeEventListener("keydown", refs.keydownHandler, true);
-
-    const body = document.body;
-    if (body) {
-      if (window.PointerEvent) {
-        body.removeEventListener("pointerdown", refs.bodyPointerFallback, refs.bodyPointerOptions);
-      } else {
-        body.removeEventListener("touchstart", refs.bodyTouchFallback, refs.touchListenerOptions);
-      }
-    }
-
-    gestureHandlerRefs = null;
-    gestureHandlersInstalled = false;
-  }
-
-  function removePlaybackMuteHandlers() {
-    if (!playbackMuteHandlersInstalled) return;
-
-    const refs = playbackMuteHandlerRefs;
-    if (refs) {
-      window.removeEventListener("dblclick", refs.doubleClickHandler, true);
-      window.removeEventListener("keydown", refs.keydownHandler, true);
-    }
-
-    playbackMuteHandlerRefs = null;
-    playbackMuteHandlersInstalled = false;
   }
 
   function hidePlayer() {
@@ -770,12 +647,6 @@
     }
     window.IDEAS.yt.isActive = false;
     setPlayerVisibility(false);
-    if (window.IDEAS?.yt?.keepaliveInterval) {
-      clearInterval(window.IDEAS.yt.keepaliveInterval);
-      window.IDEAS.yt.keepaliveInterval = null;
-    }
-    removeGestureHandlers();
-    removePlaybackMuteHandlers();
   }
 
   function scheduleInitialShuffle(player, playlistId, behavior) {
@@ -1001,11 +872,7 @@
             }
             applyMuteSetting(event.target, stateBehavior);
             showPlayer();
-            requestFullscreen(stateBehavior);
-            removeGestureHandlers();
-            installPlaybackMuteHandlers();
           } else if (event.data === YT.PlayerState.ENDED) {
-            removePlaybackMuteHandlers();
             if (stateBehavior.autoplay && window.IDEAS.yt.isActive) {
               setPlayerVisibility(false);
               if (stateBehavior.randomize) {
@@ -1021,15 +888,10 @@
               hidePlayer();
             }
           } else if (event.data === YT.PlayerState.PAUSED) {
-            removePlaybackMuteHandlers();
-            installGestureHandlers();
             if (!safari && stateBehavior.autoplay && window.IDEAS.yt.isActive) {
               log("Resuming from unexpected pause");
               event.target.playVideo();
             }
-          } else if (event.data === YT.PlayerState.CUED || event.data === YT.PlayerState.UNSTARTED) {
-            removePlaybackMuteHandlers();
-            installGestureHandlers();
           } else if (
             !safari &&
             stateBehavior.autoplay &&
@@ -1162,22 +1024,6 @@
   function createPlayer(playlistId) {
     const behavior = getBehavior();
 
-    if (behavior.debug && !window.IDEAS?.yt?.keepaliveInterval) {
-      window.IDEAS.yt.keepaliveInterval = setInterval(() => {
-        if (IDEAS?.yt?.player && typeof IDEAS.yt.player.getPlayerState === "function") {
-          try {
-            const state = IDEAS.yt.player.getPlayerState();
-            console.debug("[YouTube Keepalive] Player state:", state);
-          } catch (err) {
-            console.warn("[YouTube Keepalive] Player check failed:", err);
-          }
-        }
-      }, 10 * 60 * 1000);
-    } else if (!behavior.debug && window.IDEAS?.yt?.keepaliveInterval) {
-      clearInterval(window.IDEAS.yt.keepaliveInterval);
-      window.IDEAS.yt.keepaliveInterval = null;
-    }
-
     if (
       window.IDEAS.yt.player &&
       typeof window.IDEAS.yt.player.getPlayerState === "function" &&
@@ -1252,6 +1098,24 @@
     } else if (typeof YT !== "undefined" && YT && YT.Player) {
       initializeYouTubePlayer();
     }
+
+    if (!window.IDEAS?.yt?.keepaliveInterval) {
+      window.IDEAS.yt.keepaliveInterval = setInterval(() => {
+        if (!getBehavior().debug) {
+          return;
+        }
+        if (IDEAS?.yt?.player && typeof IDEAS.yt.player.getPlayerState === 'function') {
+          try {
+            const state = IDEAS.yt.player.getPlayerState();
+            console.debug('[YouTube Keepalive] Player state:', state);
+          } catch (err) {
+            console.warn('[YouTube Keepalive] Player check failed:', err);
+          }
+        } else {
+          console.warn('[YouTube Keepalive] Player not ready or broken');
+        }
+      }, 10 * 60 * 1000);
+    }
   }
 
   function resolvePlaylistId(config, hass) {
@@ -1290,11 +1154,6 @@
       currentConfig = null;
       currentConfigSignature = "null";
       lastResolvedState = null;
-      if (window.IDEAS?.yt?.keepaliveInterval) {
-        clearInterval(window.IDEAS.yt.keepaliveInterval);
-        window.IDEAS.yt.keepaliveInterval = null;
-      }
-      removeGestureHandlers();
       hidePlayer();
       return;
     }
@@ -1312,10 +1171,6 @@
     const configChanged = nextConfigSignature !== currentConfigSignature;
     currentConfig = config;
     currentConfigSignature = nextConfigSignature;
-    
-    if (configChanged) {
-      fullscreenAttempted = false;
-    }
 
     const hass = getHass();
     const resolved = resolvePlaylistId(config, hass);

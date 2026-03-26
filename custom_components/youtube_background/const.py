@@ -17,7 +17,6 @@ CONF_DEBUG = "debug"
 CONF_FADE_CORNERS = "fade_corners"
 CONF_FADE_COLOR = "fade_color"
 CONF_FADE_OPACITY = "fade_opacity"
-CONF_FULLSCREEN = "fullscreen"
 CONF_ID = "id"
 CONF_YOUTUBE_API_KEY = "youtube_api_key"
 
