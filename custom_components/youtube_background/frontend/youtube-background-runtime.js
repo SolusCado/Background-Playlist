@@ -12,6 +12,8 @@
     pendingShufflePlaylistId: null
   };
 
+  let fullscreenAttempted = false;
+
   function toBoolean(value, defaultValue) {
     if (value === undefined || value === null) return defaultValue;
     if (typeof value === "boolean") return value;
@@ -666,7 +668,10 @@
     };
   }
 
-  function requestFullscreen() {
+  function requestFullscreen(config) {
+    if (!config?.fullscreen || fullscreenAttempted) return;
+    fullscreenAttempted = true;
+
     const playerEl = document.getElementById("background-player");
     if (!playerEl) return;
 
@@ -680,6 +685,7 @@
     for (const method of methods) {
       try {
         method.call(playerEl);
+        console.info("[YouTube Background] Fullscreen requested");
         return true;
       } catch (error) {
         console.warn("[YouTube Background] Fullscreen request failed", error);
@@ -697,11 +703,8 @@
     };
 
     const keydownHandler = (event) => {
-      const key = event.key.toLowerCase();
-      if (key === "m") {
+      if (event.key.toLowerCase() === "m") {
         toggleMuteFromGesture();
-      } else if (key === "f") {
-        requestFullscreen();
       }
     };
 
@@ -998,6 +1001,7 @@
             }
             applyMuteSetting(event.target, stateBehavior);
             showPlayer();
+            requestFullscreen(stateBehavior);
             removeGestureHandlers();
             installPlaybackMuteHandlers();
           } else if (event.data === YT.PlayerState.ENDED) {
@@ -1308,6 +1312,10 @@
     const configChanged = nextConfigSignature !== currentConfigSignature;
     currentConfig = config;
     currentConfigSignature = nextConfigSignature;
+    
+    if (configChanged) {
+      fullscreenAttempted = false;
+    }
 
     const hass = getHass();
     const resolved = resolvePlaylistId(config, hass);
