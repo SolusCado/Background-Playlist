@@ -5,6 +5,7 @@
   window.__ytbgRuntimeLoaded = true;
 
   const LOG_PREFIX = "YouTube Background";
+  const RUNTIME_LOG_VERSION = "2026.03.25";
   window.IDEAS = window.IDEAS || {};
   window.IDEAS.yt = window.IDEAS.yt || {
     currentPlaylistId: null,
@@ -1200,7 +1201,7 @@
 
   function waitForLovelace(timeout = 30000) {
     console.info(
-      `%c YouTube Playlist Background %c v2026.03.25 `,
+      `%c YouTube Playlist Background %c v${RUNTIME_LOG_VERSION} `,
       'background: #555; color: white; border-radius: 999px 0 0 999px; padding: 2px 10px; font-weight: 500;',
       'background: #d9534f; color: white; border-radius: 0 999px 999px 0; padding: 2px 10px; font-weight: 500; margin-left: -4px;'
     );

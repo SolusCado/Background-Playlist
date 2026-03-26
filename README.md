@@ -127,6 +127,11 @@ Example:
 - If you navigate to a dashboard or screen without a matching mapping, the player is hidden.
 - The preview in the panel is designed to match the live dashboard behavior as closely as possible.
 
+### DEV share release reminder
+
+- Update `custom_components/youtube_background/frontend/youtube-background-runtime.js` and bump `RUNTIME_LOG_VERSION` on every DEV-share push so the browser banner always shows the current build version.
+- Preferred: run `python3 scripts/bump_version.py YYYY.MM.DD` to update all version points together (`manifest.json`, `hacs.json` zip filename, and `RUNTIME_LOG_VERSION`).
+
 ## Support
 
 For issues, please check the [GitHub repository](https://github.com/SolusCado/Background-Playlist).
