@@ -611,9 +611,9 @@
     } else {
       window.addEventListener("mousedown", () => handleActivation(true, "mousedown"), true);
       window.addEventListener("touchstart", () => handleActivation(false, "touchstart"), { capture: true, passive: true });
+      window.addEventListener("touchend", () => handleActivation(false, "touchend"), { capture: true, passive: true });
     }
     window.addEventListener("click", () => handleActivation(true, "click"), true);
-    window.addEventListener("touchend", () => handleActivation(false, "touchend"), { capture: true, passive: true });
     window.addEventListener("dblclick", handleDoubleClick, true);
     window.addEventListener("keydown", (event) => {
       if (event.key === "Enter" || event.key === " ") {
