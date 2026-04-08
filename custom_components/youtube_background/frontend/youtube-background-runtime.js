@@ -589,35 +589,37 @@
     if (gestureHandlersInstalled) return;
     gestureHandlersInstalled = true;
 
-    const handleActivation = (supportsNativeDoubleClick = false, source = "activation") => {
-      attemptPlaybackFromGesture(source);
+    let touchStartAt = 0;
 
-      const now = Date.now();
-      const isDoubleActivation = now - lastActivationAt < 400;
-      lastActivationAt = now;
-
-      if (isDoubleActivation && !supportsNativeDoubleClick) {
-        toggleMuteFromGesture();
-      }
-    };
-
-    const handleDoubleClick = () => {
+    const handlePlaybackFromDoubleClick = () => {
       attemptPlaybackFromGesture("dblclick");
       toggleMuteFromGesture();
     };
 
+    const handlePlaybackFromGesture = (source = "gesture") => {
+      attemptPlaybackFromGesture(source);
+    };
+
+    // Use native dblclick for desktop; it's reliable and intentional
     if (window.PointerEvent) {
-      window.addEventListener("pointerdown", () => handleActivation(true, "pointerdown"), true);
+      window.addEventListener("pointerdown", () => handlePlaybackFromGesture("pointerdown"), true);
     } else {
-      window.addEventListener("mousedown", () => handleActivation(true, "mousedown"), true);
-      window.addEventListener("touchstart", () => handleActivation(false, "touchstart"), { capture: true, passive: true });
-      window.addEventListener("touchend", () => handleActivation(false, "touchend"), { capture: true, passive: true });
+      window.addEventListener("mousedown", () => handlePlaybackFromGesture("mousedown"), true);
     }
-    window.addEventListener("click", () => handleActivation(true, "click"), true);
-    window.addEventListener("dblclick", handleDoubleClick, true);
+
+    // Native dblclick event: fires reliably on desktop and tablet for intentional double-clicks
+    window.addEventListener("dblclick", handlePlaybackFromDoubleClick, true);
+
+    // Touch events: only use for playback attempt, never for mute toggle
+    window.addEventListener("touchstart", () => {
+      touchStartAt = Date.now();
+      handlePlaybackFromGesture("touchstart");
+    }, { capture: true, passive: true });
+
+    // Keyboard: allow Enter/Space for playback, 'm' key for mute
     window.addEventListener("keydown", (event) => {
       if (event.key === "Enter" || event.key === " ") {
-        attemptPlaybackFromGesture("keydown");
+        handlePlaybackFromGesture("keydown");
       }
       if (event.key.toLowerCase() === "m") {
         toggleMuteFromGesture();
@@ -626,17 +628,12 @@
 
     const body = document.body;
     if (body) {
-      const bodyPointerFallback = () => {
-        attemptPlaybackFromGesture("body.pointerdown");
-      };
-      const bodyTouchFallback = () => {
-        attemptPlaybackFromGesture("body.touchstart");
-      };
+      const bodyPlaybackFallback = (source) => () => handlePlaybackFromGesture(source);
 
       if (window.PointerEvent) {
-        body.addEventListener("pointerdown", bodyPointerFallback, { capture: true });
+        body.addEventListener("pointerdown", bodyPlaybackFallback("body.pointerdown"), { capture: true });
       } else {
-        body.addEventListener("touchstart", bodyTouchFallback, { capture: true, passive: true });
+        body.addEventListener("touchstart", bodyPlaybackFallback("body.touchstart"), { capture: true, passive: true });
       }
     }
   }
