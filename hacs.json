@@ -1,11 +1,13 @@
 {
   "name": "YouTube Background",
-  "filename": "youtube_background_2026.03.25.zip",
+  "filename": "youtube_background_2026.04.08.zip",
   "hide_default_branch": true,
   "hacs": "1.6.0",
   "homeassistant": "2023.1.0",
   "zip_release": true,
   "persistent_directory": "custom_components/youtube_background",
-  "categories": ["integration"],
+  "categories": [
+    "integration"
+  ],
   "iconurl": "https://raw.githubusercontent.com/SolusCado/Background-Playlist/main/icon.png"
 }

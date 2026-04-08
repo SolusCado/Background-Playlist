@@ -5,7 +5,7 @@
   window.__ytbgRuntimeLoaded = true;
 
   const LOG_PREFIX = "YouTube Background";
-  const RUNTIME_LOG_VERSION = "2026.03.25";
+P26.04.08";
   window.IDEAS = window.IDEAS || {};
   window.IDEAS.yt = window.IDEAS.yt || {
     currentPlaylistId: null,
