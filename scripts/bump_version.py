@@ -78,7 +78,7 @@ def update_runtime_banner(runtime_path: Path, new_version: str, dry_run: bool) -
 
     old_version = match.group(2)
     updated_source = RUNTIME_CONST_PATTERN.sub(
-        rf'\1{new_version}\3',
+        rf'\g<1>{new_version}\g<3>',
         source,
         count=1,
     )
