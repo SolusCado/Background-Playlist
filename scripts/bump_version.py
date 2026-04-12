@@ -6,10 +6,10 @@ import json
 import re
 from pathlib import Path
 
-VERSION_PATTERN = re.compile(r"^\d{4}\.\d{2}\.\d{2}$")
-DATE_TOKEN_PATTERN = re.compile(r"\d{4}\.\d{2}\.\d{2}")
+VERSION_PATTERN = re.compile(r"^\d{4}\.\d{2}\.\d{2}(?:\.\d+)?$")
+DATE_TOKEN_PATTERN = re.compile(r"\d{4}\.\d{2}\.\d{2}(?:\.\d+)?")
 RUNTIME_CONST_PATTERN = re.compile(
-    r'(?m)^(\s*const\s+RUNTIME_LOG_VERSION\s*=\s*")(\d{4}\.\d{2}\.\d{2})("\s*;\s*)$'
+    r'(?m)^(\s*const\s+RUNTIME_LOG_VERSION\s*=\s*")(\d{4}\.\d{2}\.\d{2}(?:\.\d+)?)("\s*;\s*)$'
 )
 
 
@@ -21,7 +21,7 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument(
         "version",
-        help="New version in YYYY.MM.DD format (example: 2026.03.26)",
+        help="New version in YYYY.MM.DD or YYYY.MM.DD.i format (example: 2026.03.26.1)",
     )
     parser.add_argument(
         "--dry-run",
@@ -34,7 +34,7 @@ def parse_args() -> argparse.Namespace:
 def validate_version(version: str) -> str:
     normalized = version.strip()
     if not VERSION_PATTERN.match(normalized):
-        raise SystemExit("Version must be in YYYY.MM.DD format.")
+        raise SystemExit("Version must be in YYYY.MM.DD or YYYY.MM.DD.i format.")
     return normalized
 
 
