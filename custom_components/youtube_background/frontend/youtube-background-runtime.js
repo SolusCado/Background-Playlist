@@ -5,7 +5,7 @@
   window.__ytbgRuntimeLoaded = true;
 
   const LOG_PREFIX = "YouTube Background";
-  const RUNTIME_LOG_VERSION = "2026.04.10";
+  const RUNTIME_LOG_VERSION = "2026.04.12";
   window.IDEAS = window.IDEAS || {};
   window.IDEAS.yt = window.IDEAS.yt || {
     currentPlaylistId: null,
@@ -58,7 +58,7 @@
     if (!player?.mute || !player?.unMute) return;
     const behavior = getBehavior(config);
 
-    if (isSafariBrowser() && behavior.autoplay && !safariGestureUnlocked) {
+    if (isStrictAutoplayBrowser() && behavior.autoplay && !safariGestureUnlocked) {
       player.mute();
       return;
     }
@@ -154,12 +154,23 @@
   let safariDeferredPlaylistId = null;
   let safariDeferredFallbackVideoId = null;
   let safariPlaylistLoaded = false;
+  let haPlayEventSubscriptionReady = false;
+  let haPauseEventSubscriptionReady = false;
 
   function isSafariBrowser() {
     const ua = navigator.userAgent || "";
     const isSafari = /Safari/i.test(ua);
     const isChromiumFamily = /Chrome|Chromium|CriOS|Edg|OPR|SamsungBrowser|Firefox|FxiOS/i.test(ua);
     return isSafari && !isChromiumFamily;
+  }
+
+  function isTizenBrowser() {
+    const ua = navigator.userAgent || "";
+    return /Tizen|SMART-TV|SmartTV|Maple/i.test(ua);
+  }
+
+  function isStrictAutoplayBrowser() {
+    return isSafariBrowser() || isTizenBrowser();
   }
 
   function ensureInlineIframeAttributes() {
@@ -194,17 +205,17 @@
   }
 
   function deferSafariPlaylistUntilGesture(playlistId) {
-    if (!isSafariBrowser()) return;
+    if (!isStrictAutoplayBrowser()) return;
     safariDeferredPlaylistId = playlistId || null;
     safariPlaylistLoaded = false;
     pendingGesturePlayback = false;
-    console.info("[YouTube Background] Safari defer playlist load until gesture", {
+    console.info("[YouTube Background] Strict autoplay defer playlist load until gesture", {
       playlistId: safariDeferredPlaylistId,
     });
   }
 
   function loadSafariDeferredPlaylist(player, source = "gesture") {
-    if (!isSafariBrowser() || !player) return false;
+    if (!isStrictAutoplayBrowser() || !player) return false;
 
     // Handle deferred single-video fallback first (set when 153 fires before gesture)
     if (safariDeferredFallbackVideoId) {
@@ -213,7 +224,7 @@
       safariPlaylistLoaded = true;
       pendingGesturePlayback = false;
       const behavior = getBehavior();
-      console.info("[YouTube Background] Safari playing deferred fallback video from gesture", {
+      console.info("[YouTube Background] Strict autoplay playing deferred fallback video from gesture", {
         source,
         videoId,
       });
@@ -240,14 +251,14 @@
       safariDeferredPlaylistId = null;
       safariPlaylistLoaded = true;
       pendingGesturePlayback = false;
-      console.info("[YouTube Background] Safari playlist loaded from gesture", {
+      console.info("[YouTube Background] Strict autoplay playlist loaded from gesture", {
         source,
         playlistId,
         index,
       });
       return true;
     } catch (error) {
-      console.warn("[YouTube Background] Safari deferred load failed", {
+      console.warn("[YouTube Background] Strict autoplay deferred load failed", {
         source,
         playlistId,
         error,
@@ -300,7 +311,7 @@
     }
   }
 
-  function getPlayerVarsForInit(behavior, isSafari, origin, widgetReferrer) {
+  function getPlayerVarsForInit(behavior, strictAutoplay, origin, widgetReferrer) {
     const base = {
       controls: 0,
       modestbranding: 1,
@@ -312,7 +323,7 @@
       widget_referrer: widgetReferrer,
     };
 
-    if (isSafari) {
+    if (strictAutoplay) {
       return {
         ...base,
         autoplay: 0,
@@ -532,7 +543,7 @@
 
     try {
       if (
-        isSafariBrowser() &&
+        isStrictAutoplayBrowser() &&
         !safariPlaylistLoaded &&
         (window.IDEAS?.yt?.currentPlaylistId || safariDeferredFallbackVideoId)
       ) {
@@ -573,6 +584,120 @@
     }
   }
 
+  function dashboardPathsMatch(stored, requested) {
+    const bare = (path) => {
+      const normalized = String(path || "").trim().replace(/^\/+|\/+$/g, "");
+      return normalized.startsWith("dashboard-") ? normalized.slice("dashboard-".length) : normalized;
+    };
+
+    const left = String(stored || "").trim().replace(/^\/+|\/+$/g, "");
+    const right = String(requested || "").trim().replace(/^\/+|\/+$/g, "");
+    return left === right || bare(left) === bare(right);
+  }
+
+  function shouldHandlePlayEvent(data = {}) {
+    const dashboardTarget = String(data?.dashboard_path || "").trim().replace(/^\/+|\/+$/g, "");
+    const viewTarget = String(data?.view_path || "").trim().replace(/^\/+|\/+$/g, "");
+
+    if (!dashboardTarget && !viewTarget) {
+      return true;
+    }
+
+    const routeParts = window.location.pathname.split("/").filter(Boolean);
+    const currentDashboard = normalizeDashboardPath(routeParts[0] || "lovelace");
+    const currentView = String(routeParts[1] || "").trim().replace(/^\/+|\/+$/g, "");
+
+    if (dashboardTarget && !dashboardPathsMatch(dashboardTarget, currentDashboard)) {
+      return false;
+    }
+
+    if (viewTarget && viewTarget !== currentView) {
+      return false;
+    }
+
+    return true;
+  }
+
+  function installHomeAssistantPlayActionListener() {
+    if (haPlayEventSubscriptionReady) {
+      return;
+    }
+
+    const hass = getHass();
+    const connection = hass?.connection;
+    if (!connection || typeof connection.subscribeEvents !== "function") {
+      setTimeout(installHomeAssistantPlayActionListener, 1000);
+      return;
+    }
+
+    connection
+      .subscribeEvents((eventMessage) => {
+        const payload = eventMessage?.event?.data || eventMessage?.data || {};
+        if (!shouldHandlePlayEvent(payload)) {
+          return;
+        }
+
+        checkViewBackgroundConfig().finally(() => {
+          window.setTimeout(() => {
+            attemptPlaybackFromGesture(`ha_action:${payload?.source || "service"}`);
+          }, 0);
+        });
+      }, "youtube_background_play")
+      .then(() => {
+        haPlayEventSubscriptionReady = true;
+      })
+      .catch((error) => {
+        console.warn("[YouTube Background] Failed to subscribe to HA play action event", error);
+        setTimeout(installHomeAssistantPlayActionListener, 2000);
+      });
+  }
+
+  function pausePlaybackFromEvent(source = "service") {
+    const player = window.IDEAS?.yt?.player;
+    if (!player || typeof player.pauseVideo !== "function") {
+      return;
+    }
+
+    try {
+      pendingGesturePlayback = false;
+      player.pauseVideo();
+      setPlayerVisibility(false);
+      console.info("[YouTube Background] Pause requested", { source });
+    } catch (error) {
+      console.warn("[YouTube Background] Pause request failed", { source, error });
+    }
+  }
+
+  function installHomeAssistantPauseActionListener() {
+    if (haPauseEventSubscriptionReady) {
+      return;
+    }
+
+    const hass = getHass();
+    const connection = hass?.connection;
+    if (!connection || typeof connection.subscribeEvents !== "function") {
+      setTimeout(installHomeAssistantPauseActionListener, 1000);
+      return;
+    }
+
+    connection
+      .subscribeEvents((eventMessage) => {
+        const payload = eventMessage?.event?.data || eventMessage?.data || {};
+        if (!shouldHandlePlayEvent(payload)) {
+          return;
+        }
+
+        pausePlaybackFromEvent(`ha_action:${payload?.source || "service"}`);
+      }, "youtube_background_pause")
+      .then(() => {
+        haPauseEventSubscriptionReady = true;
+      })
+      .catch((error) => {
+        console.warn("[YouTube Background] Failed to subscribe to HA pause action event", error);
+        setTimeout(installHomeAssistantPauseActionListener, 2000);
+      });
+  }
+
   function toggleMuteFromGesture() {
     const player = window.IDEAS?.yt?.player;
     if (!player?.isMuted || !player?.mute || !player?.unMute) return;
@@ -588,8 +713,6 @@
   function installGestureHandlers() {
     if (gestureHandlersInstalled) return;
     gestureHandlersInstalled = true;
-
-    let touchStartAt = 0;
 
     const handlePlaybackFromDoubleClick = () => {
       attemptPlaybackFromGesture("dblclick");
@@ -612,7 +735,6 @@
 
     // Touch events: only use for playback attempt, never for mute toggle
     window.addEventListener("touchstart", () => {
-      touchStartAt = Date.now();
       handlePlaybackFromGesture("touchstart");
     }, { capture: true, passive: true });
 
@@ -789,11 +911,12 @@
     const origin = window.location.origin || undefined;
     const widgetReferrer = window.location.href || undefined;
     const isSafari = isSafariBrowser();
+    const strictAutoplay = isStrictAutoplayBrowser();
     window.IDEAS.yt.player = new YT.Player("yt-Iframe", {
       height: "100%",
       width: "100%",
       host: "https://www.youtube-nocookie.com",
-      playerVars: getPlayerVarsForInit(onInitBehavior, isSafari, origin, widgetReferrer),
+      playerVars: getPlayerVarsForInit(onInitBehavior, strictAutoplay, origin, widgetReferrer),
       events: {
         onReady: function (event) {
           const currentId = window.IDEAS.yt.currentPlaylistId;
@@ -805,10 +928,12 @@
           setTimeout(ensureInlineIframeAttributes, 250);
           setTimeout(ensureInlineIframeAttributes, 1200);
 
-          if (isSafari) {
-            console.info("[YouTube Background] Safari legacy onReady path", {
+          if (strictAutoplay) {
+            console.info("[YouTube Background] Strict autoplay onReady path", {
               playlistId: currentId,
               startIndex,
+              isSafari,
+              isTizen: isTizenBrowser(),
             });
             deferSafariPlaylistUntilGesture(currentId);
           } else {
@@ -817,13 +942,13 @@
               forceCue: false,
             });
           }
-          if (!isSafari && typeof event.target.setShuffle === "function") {
+          if (!strictAutoplay && typeof event.target.setShuffle === "function") {
             event.target.setShuffle(readyBehavior.randomize);
           }
-          if (!isSafari) {
+          if (!strictAutoplay) {
             event.target.setPlaybackQuality("highres");
           }
-          if (isSafari) {
+          if (strictAutoplay) {
             if (typeof event.target.mute === "function") {
               event.target.mute();
             }
@@ -831,9 +956,11 @@
             applyMuteSetting(event.target, readyBehavior);
           }
           if (readyBehavior.autoplay) {
-            if (isSafari) {
-              console.info("[YouTube Background] Safari autoplay deferred until gesture", {
+            if (strictAutoplay) {
+              console.info("[YouTube Background] Strict autoplay deferred until gesture", {
                 playlistId: currentId,
+                isSafari,
+                isTizen: isTizenBrowser(),
               });
             } else if (readyBehavior.randomize) {
               scheduleInitialShuffle(event.target, currentId, readyBehavior);
@@ -841,7 +968,7 @@
               event.target.playVideo();
             }
 
-            if (pendingGesturePlayback && (!isSafari || safariGestureUnlocked)) {
+            if (pendingGesturePlayback && (!strictAutoplay || safariGestureUnlocked)) {
               setTimeout(() => {
                 try {
                   applyMuteSetting(event.target, readyBehavior);
@@ -858,13 +985,13 @@
         },
         onStateChange: function (event) {
           const stateBehavior = getBehavior();
-          const safari = isSafariBrowser();
+          const strictAutoplay = isStrictAutoplayBrowser();
           if (stateBehavior.debug) {
             console.log(Object.keys(YT.PlayerState).find(key => YT.PlayerState[key] === event.data));
           }
 
           if (event.data === YT.PlayerState.PLAYING) {
-            if (safari) {
+            if (strictAutoplay) {
               safariPlaylistLoaded = true;
               safariDeferredPlaylistId = null;
             }
@@ -886,12 +1013,12 @@
               hidePlayer();
             }
           } else if (event.data === YT.PlayerState.PAUSED) {
-            if (!safari && stateBehavior.autoplay && window.IDEAS.yt.isActive) {
+            if (!strictAutoplay && stateBehavior.autoplay && window.IDEAS.yt.isActive) {
               log("Resuming from unexpected pause");
               event.target.playVideo();
             }
           } else if (
-            !safari &&
+            !strictAutoplay &&
             stateBehavior.autoplay &&
             window.IDEAS.yt.isActive &&
             event.data !== YT.PlayerState.BUFFERING &&
@@ -909,12 +1036,15 @@
           const errorCode = Number(event?.data);
           const behavior = getBehavior();
           const safari = isSafariBrowser();
+          const strictAutoplay = isStrictAutoplayBrowser();
           const playlistId = window.IDEAS?.yt?.currentPlaylistId;
 
-          if (safari && !safariGestureUnlocked && !safariPlaylistLoaded) {
-            console.info("[YouTube Background] Safari pre-gesture player error ignored", {
+          if (strictAutoplay && !safariGestureUnlocked && !safariPlaylistLoaded) {
+            console.info("[YouTube Background] Strict autoplay pre-gesture player error ignored", {
               playlistId,
               errorCode,
+              isSafari: safari,
+              isTizen: isTizenBrowser(),
             });
             return;
           }
@@ -933,6 +1063,7 @@
             retryCount: safariPlaylistRetryCount,
             href: window.location.href,
             safari,
+            strictAutoplay,
           });
 
           if (isHardBlock) {
@@ -1000,7 +1131,7 @@
               try {
                 loadPlaylistForPlayer(event.target, playlistId, behavior, {
                   index: retryIndex,
-                  forceCue: safari,
+                  forceCue: strictAutoplay,
                 });
                 applyMuteSetting(event.target, behavior);
                 if (behavior.autoplay) {
@@ -1027,15 +1158,15 @@
       typeof window.IDEAS.yt.player.getPlayerState === "function" &&
       window.IDEAS.yt.currentPlaylistId === playlistId
     ) {
-      const safari = isSafariBrowser();
+      const strictAutoplay = isStrictAutoplayBrowser();
       applyTransitionSetting();
       applyOverlaySetting();
-      if (!safari && typeof window.IDEAS.yt.player.setShuffle === "function") {
+      if (!strictAutoplay && typeof window.IDEAS.yt.player.setShuffle === "function") {
         window.IDEAS.yt.player.setShuffle(behavior.randomize);
       }
       applyMuteSetting(window.IDEAS.yt.player);
       if (behavior.autoplay) {
-        if (safari) {
+        if (strictAutoplay) {
           deferSafariPlaylistUntilGesture(playlistId);
         } else if (behavior.randomize) {
           scheduleInitialShuffle(window.IDEAS.yt.player, playlistId, behavior);
@@ -1055,9 +1186,9 @@
       typeof window.IDEAS.yt.player.loadPlaylist === "function" &&
       window.IDEAS.yt.currentPlaylistId !== playlistId
     ) {
-      const safari = isSafariBrowser();
+      const strictAutoplay = isStrictAutoplayBrowser();
       log(`Switching to playlist ${playlistId}`);
-      if (safari) {
+      if (strictAutoplay) {
         window.IDEAS.yt.currentPlaylistId = playlistId;
         deferSafariPlaylistUntilGesture(playlistId);
       } else {
@@ -1066,15 +1197,17 @@
           forceCue: false,
         });
       }
-      if (!safari && typeof window.IDEAS.yt.player.setShuffle === "function") {
+      if (!strictAutoplay && typeof window.IDEAS.yt.player.setShuffle === "function") {
         window.IDEAS.yt.player.setShuffle(behavior.randomize);
       }
       applyMuteSetting(window.IDEAS.yt.player);
       applyOverlaySetting();
       if (behavior.autoplay) {
-        if (safari) {
-          console.info("[YouTube Background] Safari switched playlist, waiting for gesture", {
+        if (strictAutoplay) {
+          console.info("[YouTube Background] Strict autoplay switched playlist, waiting for gesture", {
             playlistId,
+            isSafari: isSafariBrowser(),
+            isTizen: isTizenBrowser(),
           });
         } else if (behavior.randomize) {
           scheduleInitialShuffle(window.IDEAS.yt.player, playlistId, behavior);
@@ -1190,7 +1323,7 @@
       requestAnimationFrame(() => checkViewBackgroundConfig());
     });
 
-    const pollIntervalMs = isSafariBrowser() ? 15000 : 3000;
+    const pollIntervalMs = isStrictAutoplayBrowser() ? 15000 : 3000;
     setInterval(() => {
       checkViewBackgroundConfig();
     }, pollIntervalMs);
@@ -1206,6 +1339,8 @@
     // Start navigation watcher immediately — the 3s poll will activate once hass is ready
   installLifecycleDiagnostics();
     watchNavigation();
+    installHomeAssistantPlayActionListener();
+    installHomeAssistantPauseActionListener();
 
     const start = performance.now();
 

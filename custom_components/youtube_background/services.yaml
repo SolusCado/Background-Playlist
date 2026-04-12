@@ -1,0 +1,47 @@
+play:
+  name: Trigger background playback
+  description: Trigger YouTube background playback in active dashboard sessions.
+  fields:
+    dashboard_path:
+      name: Dashboard path
+      description: Optional dashboard path filter (for example `dashboard-tv` or `lovelace`).
+      required: false
+      selector:
+        text:
+    view_path:
+      name: View path
+      description: Optional view path filter (for example `lounge` or `0`).
+      required: false
+      selector:
+        text:
+    source:
+      name: Source label
+      description: Optional source string included in runtime diagnostics.
+      required: false
+      example: automation
+      selector:
+        text:
+
+pause:
+  name: Pause background playback
+  description: Pause YouTube background playback in active dashboard sessions.
+  fields:
+    dashboard_path:
+      name: Dashboard path
+      description: Optional dashboard path filter (for example `dashboard-tv` or `lovelace`).
+      required: false
+      selector:
+        text:
+    view_path:
+      name: View path
+      description: Optional view path filter (for example `lounge` or `0`).
+      required: false
+      selector:
+        text:
+    source:
+      name: Source label
+      description: Optional source string included in runtime diagnostics.
+      required: false
+      example: automation
+      selector:
+        text:

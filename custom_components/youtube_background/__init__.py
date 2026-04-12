@@ -17,7 +17,7 @@ from homeassistant.components.frontend import (
     async_remove_panel,
 )
 from homeassistant.config_entries import ConfigEntry
-from homeassistant.core import HomeAssistant
+from homeassistant.core import HomeAssistant, ServiceCall
 from homeassistant.helpers import config_validation as cv
 from homeassistant.helpers.storage import Store
 from homeassistant.helpers.typing import ConfigType
@@ -46,7 +46,11 @@ from .const import (
     CONF_MAPPINGS,
     CONF_MUTE,
     CONF_RANDOMIZE,
+    EVENT_PAUSE_REQUEST,
+    EVENT_PLAY_REQUEST,
     CONF_STATE_MAP,
+    SERVICE_PAUSE,
+    SERVICE_PLAY,
     CONF_TRANSITION,
     CONF_VIEW_PATH,
     CONF_YOUTUBE_API_KEY,
@@ -184,6 +188,7 @@ async def async_setup(hass: HomeAssistant, config: ConfigType) -> bool:
     hass.data[DOMAIN] = YouTubeBackgroundData(hass)
     await hass.data[DOMAIN].async_load()
     await async_register_websocket_commands(hass)
+    _async_register_services(hass)
     return True
 
 
@@ -219,7 +224,72 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
 async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     """Unload a config entry."""
     _async_remove_existing_panel(hass)
+
+    remaining_entries = [
+        existing
+        for existing in hass.config_entries.async_entries(DOMAIN)
+        if existing.entry_id != entry.entry_id
+    ]
+    if not remaining_entries:
+        if hass.services.has_service(DOMAIN, SERVICE_PLAY):
+            hass.services.async_remove(DOMAIN, SERVICE_PLAY)
+        if hass.services.has_service(DOMAIN, SERVICE_PAUSE):
+            hass.services.async_remove(DOMAIN, SERVICE_PAUSE)
+
     return True
+
+
+def _async_register_services(hass: HomeAssistant) -> None:
+    """Register integration services."""
+    if hass.services.has_service(DOMAIN, SERVICE_PLAY):
+        return
+
+    service_schema = vol.Schema(
+        {
+            vol.Optional(CONF_DASHBOARD_PATH): cv.string,
+            vol.Optional(CONF_VIEW_PATH): cv.string,
+            vol.Optional("source"): cv.string,
+        }
+    )
+
+    async def async_handle_play_service(call: ServiceCall) -> None:
+        """Trigger playback in active dashboard runtimes."""
+        dashboard_path = _normalize_dashboard_path(call.data.get(CONF_DASHBOARD_PATH, ""))
+        view_path = _normalize_view_path(call.data.get(CONF_VIEW_PATH, "")) or ""
+        source = str(call.data.get("source") or "service").strip() or "service"
+
+        event_data = {
+            CONF_DASHBOARD_PATH: dashboard_path,
+            CONF_VIEW_PATH: view_path,
+            "source": source,
+        }
+        hass.bus.async_fire(EVENT_PLAY_REQUEST, event_data)
+
+    async def async_handle_pause_service(call: ServiceCall) -> None:
+        """Pause playback in active dashboard runtimes."""
+        dashboard_path = _normalize_dashboard_path(call.data.get(CONF_DASHBOARD_PATH, ""))
+        view_path = _normalize_view_path(call.data.get(CONF_VIEW_PATH, "")) or ""
+        source = str(call.data.get("source") or "service").strip() or "service"
+
+        event_data = {
+            CONF_DASHBOARD_PATH: dashboard_path,
+            CONF_VIEW_PATH: view_path,
+            "source": source,
+        }
+        hass.bus.async_fire(EVENT_PAUSE_REQUEST, event_data)
+
+    hass.services.async_register(
+        DOMAIN,
+        SERVICE_PLAY,
+        async_handle_play_service,
+        schema=service_schema,
+    )
+    hass.services.async_register(
+        DOMAIN,
+        SERVICE_PAUSE,
+        async_handle_pause_service,
+        schema=service_schema,
+    )
 
 
 # WebSocket API

@@ -127,6 +127,45 @@ Example:
 - If you navigate to a dashboard or screen without a matching mapping, the player is hidden.
 - The preview in the panel is designed to match the live dashboard behavior as closely as possible.
 
+### Automation action: trigger playback
+
+You can trigger playback from automations/scripts using the `youtube_background.play` service.
+
+Example automation action:
+
+```yaml
+action:
+	- service: youtube_background.play
+		data:
+			dashboard_path: dashboard-television
+			view_path: lounge
+			source: automation
+```
+
+All fields are optional:
+- If no fields are provided, all active YouTube Background runtimes receive the play request.
+- `dashboard_path` and `view_path` can target a specific dashboard/view.
+
+Pause example:
+
+```yaml
+action:
+	- service: youtube_background.pause
+		data:
+			dashboard_path: dashboard-television
+			view_path: lounge
+			source: automation
+```
+
+The same optional targeting fields apply to `youtube_background.pause`.
+
+### Release notes
+
+#### `2026.04.12`
+
+- Improved autoplay compatibility for strict browser environments, including the native Samsung Tizen browser, by deferring startup until a valid playback unlock path is available.
+- Added `youtube_background.play` and `youtube_background.pause` Home Assistant actions so dashboards can be started or paused from automations and scripts.
+
 ### DEV share release reminder
 
 - Update `custom_components/youtube_background/frontend/youtube-background-runtime.js` and bump `RUNTIME_LOG_VERSION` on every DEV-share push so the browser banner always shows the current build version.

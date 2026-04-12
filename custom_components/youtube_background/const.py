@@ -33,3 +33,9 @@ API_SEARCH_PLAYLISTS = "search_playlists"
 API_RESOLVE_PLAYLIST = "resolve_playlist"
 API_GET_YOUTUBE_API_STATUS = "get_youtube_api_status"
 API_GET_PLAYLIST_FALLBACK_VIDEO = "get_playlist_fallback_video"
+
+# Services and events
+SERVICE_PLAY = "play"
+SERVICE_PAUSE = "pause"
+EVENT_PLAY_REQUEST = f"{DOMAIN}_play"
+EVENT_PAUSE_REQUEST = f"{DOMAIN}_pause"
