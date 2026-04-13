@@ -75,7 +75,9 @@ class YouTubeBackgroundPanel extends HTMLElement {
     }
 
     for (const mapping of this._mappings) {
-      if (!mapping?.id || !mapping?.default_playlist_id || mapping?.default_playlist_title) {
+      const hasValidItemCount = Number.isFinite(Number(mapping?.default_playlist_item_count))
+        && Number(mapping.default_playlist_item_count) > 0;
+      if (!mapping?.id || !mapping?.default_playlist_id || (mapping?.default_playlist_title && hasValidItemCount)) {
         continue;
       }
 
@@ -85,15 +87,23 @@ class YouTubeBackgroundPanel extends HTMLElement {
           value: mapping.default_playlist_id,
         });
         const title = String(response?.playlist?.title || "").trim();
-        if (!title) {
+        const itemCount = Number(response?.playlist?.item_count);
+        const normalizedItemCount = Number.isFinite(itemCount) && itemCount > 0
+          ? Math.floor(itemCount)
+          : 0;
+        if (!title && !normalizedItemCount) {
           continue;
         }
 
         mapping.default_playlist_title = title;
+        mapping.default_playlist_item_count = normalizedItemCount;
         await this._hass.callWS({
           type: "youtube_background/update_mapping",
           mapping_id: mapping.id,
-          updates: { default_playlist_title: title },
+          updates: {
+            default_playlist_title: title,
+            default_playlist_item_count: normalizedItemCount,
+          },
         });
       } catch (error) {
         console.warn("Could not hydrate playlist title", mapping?.default_playlist_id, error);
@@ -134,6 +144,9 @@ class YouTubeBackgroundPanel extends HTMLElement {
         _playlistResolveBusy: false,
         _playlistResolvedTitle: "",
         _playlistResolvedDetails: "",
+        default_playlist_item_count: Number.isFinite(Number(mapping.default_playlist_item_count))
+          ? Math.max(0, Math.floor(Number(mapping.default_playlist_item_count)))
+          : 0,
         default_playlist_title: mapping.default_playlist_title || "",
       }));
     } catch (error) {
@@ -246,6 +259,7 @@ class YouTubeBackgroundPanel extends HTMLElement {
       entity_id: "",
       default_playlist_id: "",
       default_playlist_title: "",
+      default_playlist_item_count: 0,
       state_map: {},
       mute: true,
       autoplay: true,
@@ -341,6 +355,7 @@ class YouTubeBackgroundPanel extends HTMLElement {
 
     if (field === "default_playlist_id") {
       mapping.default_playlist_title = "";
+      mapping.default_playlist_item_count = 0;
       mapping._playlistResolvedTitle = "";
       mapping._playlistResolvedDetails = "";
       mapping._playlistResolveBusy = false;
@@ -455,6 +470,9 @@ class YouTubeBackgroundPanel extends HTMLElement {
       const resolvedId = playlist.id || rawValue;
       mapping[fieldName] = resolvedId;
       mapping.default_playlist_title = playlist.title || "";
+      mapping.default_playlist_item_count = Number.isFinite(Number(playlist.item_count))
+        ? Math.max(0, Math.floor(Number(playlist.item_count)))
+        : 0;
       mapping._playlistResolvedTitle = playlist.title || "";
       const detailParts = [];
       if (playlist.item_count != null) {
@@ -488,6 +506,9 @@ class YouTubeBackgroundPanel extends HTMLElement {
     const playlist = (mapping._playlistSearchResults || []).find((item) => item.id === playlistId);
     mapping.default_playlist_id = playlistId;
     mapping.default_playlist_title = playlist?.title || "";
+    mapping.default_playlist_item_count = Number.isFinite(Number(playlist?.item_count))
+      ? Math.max(0, Math.floor(Number(playlist.item_count)))
+      : 0;
     mapping._playlistResolvedTitle = playlist?.title || "";
     const detailParts = [];
     if (playlist?.item_count != null) {
@@ -706,18 +727,43 @@ class YouTubeBackgroundPanel extends HTMLElement {
   _scheduleInitialShuffle(player, playlistId, autoplay, randomize) {
     // Match the runtime's shuffle scheduling: setShuffle() + nextVideo() after delay
     if (!randomize || !autoplay) return;
-    
-    setTimeout(() => {
+
+    let attemptsRemaining = 10;
+
+    const tryRandomStart = () => {
       // Only apply if player still exists and playlist hasn't changed
       if (
         this._previewPlayer === player &&
         this._preview.open &&
-        this._preview.playlistId === playlistId &&
-        typeof player.nextVideo === "function"
+        this._preview.playlistId === playlistId
       ) {
-        player.nextVideo();
+        const playlistEntries = typeof player.getPlaylist === "function" ? player.getPlaylist() : null;
+        const playlistLength = Array.isArray(playlistEntries) ? playlistEntries.length : 0;
+
+        if (playlistLength > 1 && typeof player.playVideoAt === "function") {
+          const randomIndex = Math.floor(Math.random() * playlistLength);
+          player.playVideoAt(randomIndex);
+          return;
+        }
+
+        if (playlistLength === 1 && typeof player.playVideoAt === "function") {
+          player.playVideoAt(0);
+          return;
+        }
+
+        if (attemptsRemaining > 0) {
+          attemptsRemaining -= 1;
+          setTimeout(tryRandomStart, 200);
+          return;
+        }
+
+        if (typeof player.nextVideo === "function") {
+          player.nextVideo();
+        }
       }
-    }, 700);
+    };
+
+    setTimeout(tryRandomStart, 700);
   }
 
   _installPreviewGestureHandlers(target) {
@@ -924,6 +970,9 @@ class YouTubeBackgroundPanel extends HTMLElement {
       entity_id: (mapping.entity_id || "").trim(),
       default_playlist_id: (mapping.default_playlist_id || "").trim(),
       default_playlist_title: (mapping.default_playlist_title || "").trim(),
+      default_playlist_item_count: Number.isFinite(Number(mapping.default_playlist_item_count))
+        ? Math.max(0, Math.floor(Number(mapping.default_playlist_item_count)))
+        : 0,
       state_map: mapping.state_map || {},
       mute: this._toBoolean(mapping.mute, true),
       autoplay: this._toBoolean(mapping.autoplay, true),
@@ -985,6 +1034,76 @@ class YouTubeBackgroundPanel extends HTMLElement {
     }
   }
 
+  async _duplicateMapping(mappingId) {
+    const mapping = this._mappings.find((item) => item.id === mappingId);
+    if (!mapping) {
+      return;
+    }
+
+    const duplicatedMapping = {
+      enabled: this._toBoolean(mapping.enabled, true),
+      dashboard_path: (mapping.dashboard_path || "").trim(),
+      view_path: (mapping.view_path || "").trim(),
+      entity_id: (mapping.entity_id || "").trim(),
+      default_playlist_id: (mapping.default_playlist_id || "").trim(),
+      default_playlist_title: (mapping.default_playlist_title || "").trim(),
+      default_playlist_item_count: Number.isFinite(Number(mapping.default_playlist_item_count))
+        ? Math.max(0, Math.floor(Number(mapping.default_playlist_item_count)))
+        : 0,
+      state_map: { ...(mapping.state_map || {}) },
+      mute: this._toBoolean(mapping.mute, true),
+      autoplay: this._toBoolean(mapping.autoplay, true),
+      randomize: this._toBoolean(mapping.randomize, true),
+      transition: mapping.transition || "fade",
+      debug: this._toBoolean(mapping.debug, false),
+      fade_corners: Array.isArray(mapping.fade_corners) ? [...mapping.fade_corners] : [],
+      fade_color: mapping.fade_color || "#000000",
+      fade_opacity: Number.isFinite(Number(mapping.fade_opacity)) ? Number(mapping.fade_opacity) : 50,
+    };
+
+    try {
+      const response = await this._hass.callWS({
+        type: "youtube_background/create_mapping",
+        mapping: duplicatedMapping,
+      });
+      const createdMapping = response?.mapping;
+      if (!createdMapping?.id) {
+        throw new Error("No mapping returned from create_mapping");
+      }
+
+      this._mappings.unshift({
+        ...createdMapping,
+        mute: this._toBoolean(createdMapping.mute, true),
+        autoplay: this._toBoolean(createdMapping.autoplay, true),
+        randomize: this._toBoolean(createdMapping.randomize, true),
+        transition: createdMapping.transition || "fade",
+        debug: this._toBoolean(createdMapping.debug, false),
+        fade_corners: Array.isArray(createdMapping.fade_corners) ? createdMapping.fade_corners : [],
+        fade_color: createdMapping.fade_color || "#000000",
+        fade_opacity: Number.isFinite(Number(createdMapping.fade_opacity)) ? Number(createdMapping.fade_opacity) : 50,
+        _isEditing: false,
+        _isNew: false,
+        _newStateKey: "",
+        _newStatePlaylist: "",
+        _playlistSearchQuery: "",
+        _playlistSearchResults: [],
+        _playlistSearchError: "",
+        _playlistSearchBusy: false,
+        _playlistResolveBusy: false,
+        _playlistResolvedTitle: "",
+        _playlistResolvedDetails: "",
+        default_playlist_title: createdMapping.default_playlist_title || "",
+      });
+
+      this._error = "";
+      this._render();
+    } catch (error) {
+      console.error(error);
+      this._error = "Failed to duplicate mapping.";
+      this._render();
+    }
+  }
+
   _bindEvents() {
     this.shadowRoot.querySelector("#add-mapping")?.addEventListener("click", () => this._addMapping());
 
@@ -1022,6 +1141,7 @@ class YouTubeBackgroundPanel extends HTMLElement {
         if (action === "cancel") this._cancelEdit(mappingId);
         if (action === "save") await this._saveMapping(mappingId);
         if (action === "delete") await this._deleteMapping(mappingId);
+        if (action === "duplicate") await this._duplicateMapping(mappingId);
         if (action === "add-state") this._addStateMapping(mappingId);
         if (action === "remove-state") this._removeStateMapping(mappingId, stateKey);
         if (action === "search-playlists") await this._searchPlaylists(mappingId);
@@ -1185,6 +1305,7 @@ class YouTubeBackgroundPanel extends HTMLElement {
             <div class="actions">
               <div class="action-buttons">
                 <button data-action="edit" data-mapping-id="${mapping.id}">Edit</button>
+                <button data-action="duplicate" data-mapping-id="${mapping.id}">Duplicate</button>
                 <button class="danger" data-action="delete" data-mapping-id="${mapping.id}">Delete</button>
               </div>
             </div>

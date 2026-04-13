@@ -36,6 +36,7 @@ from .const import (
     CONF_DASHBOARD_PATH,
     CONF_DEBUG,
     CONF_DEFAULT_PLAYLIST_ID,
+    CONF_DEFAULT_PLAYLIST_ITEM_COUNT,
     CONF_DEFAULT_PLAYLIST_TITLE,
     CONF_ENABLED,
     CONF_ENTITY_ID,
@@ -513,6 +514,12 @@ def _prepare_mapping(mapping: dict[str, Any]) -> dict[str, Any]:
     entity_id = (mapping.get(CONF_ENTITY_ID) or "").strip().lower()
     default_playlist_id = _normalize_playlist_value(mapping.get(CONF_DEFAULT_PLAYLIST_ID))
     default_playlist_title = str(mapping.get(CONF_DEFAULT_PLAYLIST_TITLE) or "").strip()
+    raw_item_count = mapping.get(CONF_DEFAULT_PLAYLIST_ITEM_COUNT)
+    try:
+        default_playlist_item_count = int(raw_item_count)
+    except (TypeError, ValueError):
+        default_playlist_item_count = 0
+    default_playlist_item_count = max(0, default_playlist_item_count)
 
     state_map_in = mapping.get(CONF_STATE_MAP) or {}
     state_map: dict[str, str] = {}
@@ -552,6 +559,7 @@ def _prepare_mapping(mapping: dict[str, Any]) -> dict[str, Any]:
         CONF_ENTITY_ID: entity_id,
         CONF_DEFAULT_PLAYLIST_ID: default_playlist_id,
         CONF_DEFAULT_PLAYLIST_TITLE: default_playlist_title,
+        CONF_DEFAULT_PLAYLIST_ITEM_COUNT: default_playlist_item_count,
         CONF_STATE_MAP: state_map,
         CONF_MUTE: _to_bool(mapping.get(CONF_MUTE), True),
         CONF_AUTOPLAY: _to_bool(mapping.get(CONF_AUTOPLAY), True),

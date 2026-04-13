@@ -179,6 +179,11 @@ export class YouTubeBackgroundPanel extends LitElement {
                             title="Edit"
                           ></ha-icon-button>
                           <ha-icon-button
+                            icon="mdi:content-copy"
+                            @click=${() => this.duplicateMapping(mapping.id)}
+                            title="Duplicate"
+                          ></ha-icon-button>
+                          <ha-icon-button
                             icon="mdi:delete"
                             @click=${() => this.deleteMapping(mapping.id)}
                             title="Delete"
@@ -265,6 +270,7 @@ export class YouTubeBackgroundPanel extends LitElement {
       view_path: "",
       entity_id: "",
       default_playlist_id: "",
+      default_playlist_item_count: 0,
       state_map: {},
       enabled: true,
       new: true
@@ -276,6 +282,40 @@ export class YouTubeBackgroundPanel extends LitElement {
 
   editMapping(id) {
     this.editingId = id;
+  }
+
+  async duplicateMapping(id) {
+    const mapping = this.mappings.find(m => m.id === id);
+    if (!mapping) return;
+
+    const duplicatedMapping = {
+      ...mapping,
+      id: undefined,
+      new: undefined,
+      state_map: { ...(mapping.state_map || {}) }
+    };
+
+    try {
+      const response = await this.hass.callWS({
+        type: "youtube_background/create_mapping",
+        mapping: duplicatedMapping
+      });
+
+      const newId = response?.id || response?.mapping?.id;
+      const createdMapping = response?.mapping || {
+        ...duplicatedMapping,
+        id: newId
+      };
+
+      if (!createdMapping?.id) {
+        throw new Error("Failed to duplicate mapping");
+      }
+
+      this.mappings = [createdMapping, ...this.mappings];
+      this.requestUpdate();
+    } catch (e) {
+      console.error("Failed to duplicate mapping", e);
+    }
   }
 
   cancelEdit() {
@@ -295,6 +335,9 @@ export class YouTubeBackgroundPanel extends LitElement {
       }
     } else {
       mapping[field] = value;
+      if (field === "default_playlist_id") {
+        mapping.default_playlist_item_count = 0;
+      }
     }
     this.requestUpdate();
   }

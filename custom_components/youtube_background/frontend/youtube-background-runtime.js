@@ -5,7 +5,7 @@
   window.__ytbgRuntimeLoaded = true;
 
   const LOG_PREFIX = "YouTube Background";
-  const RUNTIME_LOG_VERSION = "2026.04.12";
+  const RUNTIME_LOG_VERSION = "2026.04.13";
   window.IDEAS = window.IDEAS || {};
   window.IDEAS.yt = window.IDEAS.yt || {
     currentPlaylistId: null,
@@ -183,8 +183,25 @@
     iframe.setAttribute("referrerpolicy", "strict-origin-when-cross-origin");
   }
 
-  function getPlaylistStartIndex(behavior = getBehavior()) {
-    return behavior.randomize ? Math.floor(Math.random() * 50) : 0;
+  function getPlaylistStartIndex(playlistId, behavior = getBehavior(), config = currentConfig) {
+    if (!behavior.randomize) {
+      return 0;
+    }
+
+    const normalizedPlaylistId = String(playlistId || "").trim();
+    const normalizedDefaultPlaylistId = String(config?.default_playlist_id || "").trim();
+    const shouldUseKnownCount = Boolean(
+      normalizedPlaylistId &&
+      normalizedDefaultPlaylistId &&
+      normalizedPlaylistId === normalizedDefaultPlaylistId
+    );
+
+    const parsedItemCount = Number(config?.default_playlist_item_count);
+    const maxItems = shouldUseKnownCount && Number.isFinite(parsedItemCount) && parsedItemCount > 0
+      ? Math.floor(parsedItemCount)
+      : 50;
+
+    return Math.floor(Math.random() * maxItems);
   }
 
   function loadPlaylistForPlayer(player, playlistId, behavior = getBehavior(), options = {}) {
@@ -194,7 +211,7 @@
 
     const useCue = Boolean(options.forceCue) || !behavior.autoplay;
     const loader = useCue ? "cuePlaylist" : "loadPlaylist";
-    const index = Number.isInteger(options.index) ? options.index : getPlaylistStartIndex(behavior);
+    const index = Number.isInteger(options.index) ? options.index : getPlaylistStartIndex(playlistId, behavior);
 
     player[loader]({
       list: playlistId,
@@ -236,7 +253,7 @@
     if (!playlistId) return false;
 
     const behavior = getBehavior();
-    const index = getPlaylistStartIndex(behavior);
+    const index = getPlaylistStartIndex(playlistId, behavior);
 
     try {
       loadPlaylistForPlayer(player, playlistId, behavior, {
@@ -361,6 +378,7 @@
     return stableSerialize({
       entity_id: config.entity_id ?? null,
       default_playlist_id: config.default_playlist_id ?? null,
+      default_playlist_item_count: config.default_playlist_item_count ?? null,
       state_map: config.state_map ?? {},
       mute: config.mute ?? null,
       autoplay: config.autoplay ?? null,
@@ -776,7 +794,9 @@
     }
 
     window.IDEAS.yt.pendingShufflePlaylistId = playlistId;
-    window.setTimeout(() => {
+    let attemptsRemaining = 10;
+
+    const tryRandomStart = () => {
       if (
         window.IDEAS?.yt?.pendingShufflePlaylistId !== playlistId ||
         window.IDEAS?.yt?.currentPlaylistId !== playlistId
@@ -788,11 +808,25 @@
         if (typeof player.setShuffle === "function") {
           player.setShuffle(true);
         }
-        if (typeof player.nextVideo === "function") {
+
+        const playlistEntries = typeof player.getPlaylist === "function" ? player.getPlaylist() : null;
+        const playlistLength = Array.isArray(playlistEntries) ? playlistEntries.length : 0;
+
+        if (playlistLength > 1 && typeof player.playVideoAt === "function") {
+          const randomIndex = Math.floor(Math.random() * playlistLength);
+          player.playVideoAt(randomIndex);
+        } else if (playlistLength === 1 && typeof player.playVideoAt === "function") {
+          player.playVideoAt(0);
+        } else if (attemptsRemaining > 0) {
+          attemptsRemaining -= 1;
+          window.setTimeout(tryRandomStart, 200);
+          return;
+        } else if (typeof player.nextVideo === "function") {
           player.nextVideo();
         } else {
           player.playVideo();
         }
+
         if (behavior.autoplay) {
           player.playVideo();
         }
@@ -803,7 +837,9 @@
           window.IDEAS.yt.pendingShufflePlaylistId = null;
         }
       }
-    }, 700);
+    };
+
+    window.setTimeout(tryRandomStart, 700);
   }
 
   function ensurePlayerContainer() {
@@ -921,7 +957,7 @@
         onReady: function (event) {
           const currentId = window.IDEAS.yt.currentPlaylistId;
           const readyBehavior = getBehavior();
-          const startIndex = getPlaylistStartIndex(readyBehavior);
+          const startIndex = getPlaylistStartIndex(currentId, readyBehavior);
           safariPlaylistRetryCount = 0;
           log(`Starting playlist ${currentId}`);
           ensureInlineIframeAttributes();
@@ -1119,7 +1155,7 @@
             // 101/150: try skipping to a different index. Works on both Safari
             // and non-Safari since embedded-block errors can hit any browser.
             safariPlaylistRetryCount += 1;
-            const retryIndex = getPlaylistStartIndex(behavior);
+            const retryIndex = getPlaylistStartIndex(playlistId, behavior);
             console.warn("[YouTube Background] Embed-block retry (skip to new index)", {
               attempt: safariPlaylistRetryCount,
               retryIndex,
@@ -1193,7 +1229,7 @@
         deferSafariPlaylistUntilGesture(playlistId);
       } else {
         loadPlaylistForPlayer(window.IDEAS.yt.player, playlistId, behavior, {
-          index: getPlaylistStartIndex(behavior),
+          index: getPlaylistStartIndex(playlistId, behavior),
           forceCue: false,
         });
       }

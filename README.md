@@ -161,6 +161,12 @@ The same optional targeting fields apply to `youtube_background.pause`.
 
 ### Release notes
 
+#### `2026.04.13`
+
+- Added a **Duplicate** action on mapping cards so existing mappings can be cloned quickly from the panel.
+- Improved random startup behavior so playlist reloads are more reliably varied, including safer handling when playlist metadata is incomplete.
+- Added playlist item-count tracking in mapping metadata to support bounded random start index selection when known.
+
 #### `2026.04.12`
 
 - Improved autoplay compatibility for strict browser environments, including the native Samsung Tizen browser, by deferring startup until a valid playback unlock path is available.
