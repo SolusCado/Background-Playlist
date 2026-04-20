@@ -1234,6 +1234,14 @@
   }
 
   function addVersionOverlay() {
+    if (!IS_DEV_BUILD) {
+      const existingOverlay = document.getElementById("ytbg-version-overlay");
+      if (existingOverlay) {
+        existingOverlay.remove();
+      }
+      return;
+    }
+
     let overlay = document.getElementById("ytbg-version-overlay");
     if (!overlay) {
       overlay = document.createElement("div");
