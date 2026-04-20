@@ -62,6 +62,14 @@ class YouTubeBackgroundPanel extends HTMLElement {
     return Boolean(value);
   }
 
+  _normalizeVolume(value, defaultValue = 100) {
+    const parsed = Number(value);
+    if (!Number.isFinite(parsed)) {
+      return defaultValue;
+    }
+    return Math.max(0, Math.min(100, Math.round(parsed)));
+  }
+
   async _loadInitialData() {
     await Promise.all([this._loadMappings(), this._loadDashboards(), this._loadYouTubeApiStatus()]);
     this._entityOptions = Object.keys(this._hass?.states || {}).sort();
@@ -127,9 +135,12 @@ class YouTubeBackgroundPanel extends HTMLElement {
       this._mappings = (response.mappings || []).map((mapping) => ({
         ...mapping,
         mute: this._toBoolean(mapping.mute, true),
+        volume: this._normalizeVolume(mapping.volume, 100),
         autoplay: this._toBoolean(mapping.autoplay, true),
         randomize: this._toBoolean(mapping.randomize, true),
-        transition: mapping.transition || "fade",
+        resume_on_focus_gain: true,
+        pause_on_focus_loss: this._toBoolean(mapping.pause_on_focus_loss, false),
+        transition: "fade",
         debug: this._toBoolean(mapping.debug, false),
         fade_corners: Array.isArray(mapping.fade_corners) ? mapping.fade_corners : [],
         fade_color: mapping.fade_color || "#000000",
@@ -262,8 +273,11 @@ class YouTubeBackgroundPanel extends HTMLElement {
       default_playlist_item_count: 0,
       state_map: {},
       mute: true,
+      volume: 100,
       autoplay: true,
       randomize: true,
+      resume_on_focus_gain: true,
+      pause_on_focus_loss: false,
       transition: "fade",
       debug: false,
       fade_corners: [],
@@ -340,6 +354,9 @@ class YouTubeBackgroundPanel extends HTMLElement {
     if (field === "fade_opacity") {
       const opacityValue = Number(String(value).replace(/[^0-9.]/g, ""));
       mapping[field] = Number.isFinite(opacityValue) ? Math.max(0, Math.min(100, opacityValue)) : 50;
+    } else if (field === "volume") {
+      const volumeValue = Number(String(value).replace(/[^0-9.]/g, ""));
+      mapping[field] = Number.isFinite(volumeValue) ? Math.max(0, Math.min(100, Math.round(volumeValue))) : 100;
     } else {
       mapping[field] = value;
     }
@@ -975,9 +992,12 @@ class YouTubeBackgroundPanel extends HTMLElement {
         : 0,
       state_map: mapping.state_map || {},
       mute: this._toBoolean(mapping.mute, true),
+      volume: this._normalizeVolume(mapping.volume, 100),
       autoplay: this._toBoolean(mapping.autoplay, true),
       randomize: this._toBoolean(mapping.randomize, true),
-      transition: mapping.transition || "fade",
+      resume_on_focus_gain: true,
+      pause_on_focus_loss: this._toBoolean(mapping.pause_on_focus_loss, false),
+      transition: "fade",
       debug: this._toBoolean(mapping.debug, false),
       fade_corners: Array.isArray(mapping.fade_corners) ? mapping.fade_corners : [],
       fade_color: mapping.fade_color || "#000000",
@@ -1052,9 +1072,12 @@ class YouTubeBackgroundPanel extends HTMLElement {
         : 0,
       state_map: { ...(mapping.state_map || {}) },
       mute: this._toBoolean(mapping.mute, true),
+      volume: this._normalizeVolume(mapping.volume, 100),
       autoplay: this._toBoolean(mapping.autoplay, true),
       randomize: this._toBoolean(mapping.randomize, true),
-      transition: mapping.transition || "fade",
+      resume_on_focus_gain: true,
+      pause_on_focus_loss: this._toBoolean(mapping.pause_on_focus_loss, false),
+      transition: "fade",
       debug: this._toBoolean(mapping.debug, false),
       fade_corners: Array.isArray(mapping.fade_corners) ? [...mapping.fade_corners] : [],
       fade_color: mapping.fade_color || "#000000",
@@ -1074,9 +1097,12 @@ class YouTubeBackgroundPanel extends HTMLElement {
       this._mappings.unshift({
         ...createdMapping,
         mute: this._toBoolean(createdMapping.mute, true),
+        volume: this._normalizeVolume(createdMapping.volume, 100),
         autoplay: this._toBoolean(createdMapping.autoplay, true),
         randomize: this._toBoolean(createdMapping.randomize, true),
-        transition: createdMapping.transition || "fade",
+        resume_on_focus_gain: true,
+        pause_on_focus_loss: this._toBoolean(createdMapping.pause_on_focus_loss, false),
+        transition: "fade",
         debug: this._toBoolean(createdMapping.debug, false),
         fade_corners: Array.isArray(createdMapping.fade_corners) ? createdMapping.fade_corners : [],
         fade_color: createdMapping.fade_color || "#000000",
@@ -1116,7 +1142,7 @@ class YouTubeBackgroundPanel extends HTMLElement {
         if (!mapping || !field) {
           return;
         }
-        const defaultValue = field === "debug" ? false : true;
+        const defaultValue = (field === "debug" || field === "pause_on_focus_loss") ? false : true;
         mapping[field] = !this._toBoolean(mapping[field], defaultValue);
         this._render();
       });
@@ -1192,6 +1218,14 @@ class YouTubeBackgroundPanel extends HTMLElement {
             const mapping = this._mappings.find((item) => item.id === mappingId);
             if (mapping) {
               mapping.fade_opacity = event.currentTarget.value;
+            }
+            return;
+        }
+        if (field === "volume") {
+            const mapping = this._mappings.find((item) => item.id === mappingId);
+            if (mapping) {
+              const rawValue = Number(String(event.currentTarget.value).replace(/[^0-9.]/g, ""));
+              mapping.volume = Number.isFinite(rawValue) ? Math.max(0, Math.min(100, Math.round(rawValue))) : 100;
             }
             return;
         }
@@ -1420,8 +1454,15 @@ class YouTubeBackgroundPanel extends HTMLElement {
                 <span>Shuffle Playlist</span>
               </div>
               <div class="toggle-option">
-                <button class="toggle ${mapping.transition !== "none" ? "on" : "off"}" data-action="toggle-transition" data-mapping-id="${mapping.id}" type="button" role="switch" aria-checked="${mapping.transition !== "none"}" aria-label="Fade Transition"></button>
-                <span>Fade Transition</span>
+                <button class="toggle ${mapping.pause_on_focus_loss ? "on" : "off"}" data-toggle-field="pause_on_focus_loss" data-mapping-id="${mapping.id}" type="button" role="switch" aria-checked="${mapping.pause_on_focus_loss}" aria-label="Pause When Inactive"></button>
+                <span>Pause When Inactive</span>
+              </div>
+              <div class="volume-option">
+                <span>Volume</span>
+                <div class="volume-input-row">
+                  <input type="text" inputmode="numeric" value="${this._normalizeVolume(mapping.volume, 100)}" data-field="volume" data-mapping-id="${mapping.id}" />
+                  <span class="fade-opacity-suffix">%</span>
+                </div>
               </div>
             </div>
 
@@ -1561,6 +1602,9 @@ class YouTubeBackgroundPanel extends HTMLElement {
         .inline-toggle-row { display: flex; align-items: center; gap: 10px; }
         .playback-options-row { display: flex; flex-wrap: wrap; gap: 18px; align-items: center; }
         .toggle-option { display: inline-flex; align-items: center; gap: 10px; }
+        .volume-option { display: inline-flex; align-items: center; gap: 10px; }
+        .volume-input-row { display: inline-flex; align-items: center; gap: 8px; }
+        .volume-input-row input[type='text'] { width: 64px; margin: 0; }
         .fade-layout { display: grid; grid-template-columns: minmax(140px, 1fr) minmax(140px, 1fr) minmax(110px, 140px) minmax(110px, 140px); gap: 10px 18px; align-items: start; }
         .corner-column { display: grid; gap: 10px; }
         .corner-column label { display: flex; align-items: center; gap: 6px; font-size: 0.92rem; }

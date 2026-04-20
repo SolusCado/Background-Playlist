@@ -5,7 +5,9 @@
   window.__ytbgRuntimeLoaded = true;
 
   const LOG_PREFIX = "YouTube Background";
-  const RUNTIME_LOG_VERSION = "2026.04.13";
+  // IMPORTANT: Increment the build number (last digit) on every DEV push!
+  const RUNTIME_LOG_VERSION = "2026.04.20";
+  const IS_DEV_BUILD = /^\d{4}\.\d{2}\.\d{2}\.\d+$/.test(RUNTIME_LOG_VERSION);
   window.IDEAS = window.IDEAS || {};
   window.IDEAS.yt = window.IDEAS.yt || {
     currentPlaylistId: null,
@@ -25,12 +27,21 @@
     return Boolean(value);
   }
 
+  function normalizeVolume(value, defaultValue = 100) {
+    const numeric = Number(value);
+    if (!Number.isFinite(numeric)) return defaultValue;
+    return Math.max(0, Math.min(100, Math.round(numeric)));
+  }
+
   function getBehavior(config = currentConfig) {
     return {
       mute: toBoolean(config?.mute, true),
+      volume: normalizeVolume(config?.volume, 100),
       autoplay: toBoolean(config?.autoplay, true),
       randomize: toBoolean(config?.randomize, true),
-      transition: config?.transition === "none" ? "none" : "fade",
+      resumeOnFocusGain: true,
+      pauseOnFocusLoss: toBoolean(config?.pause_on_focus_loss, false),
+      transition: "fade",
       debug: toBoolean(config?.debug, false),
     };
   }
@@ -55,8 +66,18 @@
   }
 
   function applyMuteSetting(player, config = currentConfig) {
-    if (!player?.mute || !player?.unMute) return;
+    if (!player) return;
     const behavior = getBehavior(config);
+
+    if (typeof player.setVolume === "function") {
+      try {
+        player.setVolume(behavior.volume);
+      } catch (error) {
+        log("Failed to apply volume", error);
+      }
+    }
+
+    if (!player?.mute || !player?.unMute) return;
 
     if (isStrictAutoplayBrowser() && behavior.autoplay && !safariGestureUnlocked) {
       player.mute();
@@ -135,7 +156,8 @@
   function applyOverlaySetting(config = currentConfig) {
     const playerEl = document.getElementById("background-player");
     if (!playerEl) return;
-    const gradient = isSafariBrowser() ? "none" : buildCornerGradients(config);
+    // Always apply overlay gradient, including on Safari/iPad
+    const gradient = buildCornerGradients(config);
     playerEl.style.setProperty("--yt-overlay-gradient", gradient);
     log(`Applied overlay gradient: ${gradient.substring(0, 50)}...`);
   }
@@ -156,6 +178,59 @@
   let safariPlaylistLoaded = false;
   let haPlayEventSubscriptionReady = false;
   let haPauseEventSubscriptionReady = false;
+  let navigationPollInterval = null;
+  let removeGestureHandlers = null;
+  let focusHandlersInstalled = false;
+  let lastFocusActionAt = 0;
+  let intentionalPauseUntil = 0;
+  let highresRequestCount = 0;
+  let highresRequestLines = [];
+
+  function formatTimeForOverlay(date = new Date()) {
+    const pad = (value) => String(value).padStart(2, "0");
+    return `${pad(date.getHours())}:${pad(date.getMinutes())}:${pad(date.getSeconds())}`;
+  }
+
+  function updateHighresOverlay() {
+    if (!IS_DEV_BUILD) return;
+    const logEl = document.getElementById("ytbg-highres-log");
+    if (!logEl) return;
+    logEl.textContent = highresRequestLines.join("\n");
+  }
+
+  function appendHighresOverlayLine(source, result) {
+    if (!IS_DEV_BUILD) return;
+    highresRequestCount += 1;
+    highresRequestLines.push(`#${highresRequestCount} ${formatTimeForOverlay()} ${result} ${source}`);
+    if (highresRequestLines.length > 8) {
+      highresRequestLines = highresRequestLines.slice(-8);
+    }
+    updateHighresOverlay();
+  }
+
+  function requestHighresPlayback(player, source = "unknown") {
+    if (player && typeof player.setPlaybackQuality === "function") {
+      player.setPlaybackQuality("highres");
+      appendHighresOverlayLine(source, "OK");
+      log(`Requested highres quality on ${source}`);
+      return true;
+    }
+    appendHighresOverlayLine(source, "SKIP");
+    return false;
+  }
+
+
+  function isFullyKioskBrowser() {
+    const ua = navigator.userAgent || "";
+    // Fully Kiosk Browser often includes 'Fully' or 'Kiosk' in UA
+    return /Fully|Kiosk/i.test(ua);
+  }
+
+  function isAndroidWebView() {
+    const ua = navigator.userAgent || "";
+    // Android WebView often includes 'wv' or 'Android' and 'Version/'
+    return /Android/i.test(ua) && /wv|Version\//i.test(ua);
+  }
 
   function isSafariBrowser() {
     const ua = navigator.userAgent || "";
@@ -170,7 +245,29 @@
   }
 
   function isStrictAutoplayBrowser() {
-    return isSafariBrowser() || isTizenBrowser();
+    const ua = navigator.userAgent || "";
+    // If Fully Kiosk is detected, treat as NOT strict autoplay (assume user has enabled autoplay in settings)
+    if (isFullyKioskBrowser()) {
+      if (getBehavior().debug) {
+        console.log("[YTBG Debug] User Agent:", ua);
+        console.log("[YTBG Debug] isFullyKioskBrowser: true (bypassing strict autoplay)");
+      }
+      return false;
+    }
+    const strict = isSafariBrowser() || isTizenBrowser() || isAndroidWebView();
+    if (getBehavior().debug) {
+      console.log("[YTBG Debug] User Agent:", ua);
+      console.log("[YTBG Debug] isSafariBrowser:", isSafariBrowser());
+      console.log("[YTBG Debug] isTizenBrowser:", isTizenBrowser());
+      console.log("[YTBG Debug] isFullyKioskBrowser:", isFullyKioskBrowser());
+      console.log("[YTBG Debug] isAndroidWebView:", isAndroidWebView());
+      console.log("[YTBG Debug] isStrictAutoplayBrowser:", strict);
+    }
+    return strict;
+  }
+
+  function isTizenViewOnlyMode() {
+    return isTizenBrowser();
   }
 
   function ensureInlineIframeAttributes() {
@@ -340,6 +437,9 @@
       widget_referrer: widgetReferrer,
     };
 
+    if (getBehavior().debug) {
+      console.log("[YTBG Debug] getPlayerVarsForInit:", { strictAutoplay, behavior });
+    }
     if (strictAutoplay) {
       return {
         ...base,
@@ -381,8 +481,11 @@
       default_playlist_item_count: config.default_playlist_item_count ?? null,
       state_map: config.state_map ?? {},
       mute: config.mute ?? null,
+      volume: config.volume ?? null,
       autoplay: config.autoplay ?? null,
       randomize: config.randomize ?? null,
+      resume_on_focus_gain: config.resume_on_focus_gain ?? null,
+      pause_on_focus_loss: config.pause_on_focus_loss ?? null,
       transition: config.transition ?? null,
       debug: config.debug ?? null,
       fade_color: config.fade_color ?? null,
@@ -392,6 +495,10 @@
   }
 
   function installLifecycleDiagnostics() {
+    if (isTizenViewOnlyMode()) {
+      return;
+    }
+
     if (window.__ytbgLifecycleDiagnosticsInstalled) {
       return;
     }
@@ -533,17 +640,16 @@
     createPlayer(result.playlistId);
   }
 
-  function showPlayer() {
-    const playerEl = document.getElementById("background-player");
-    if (playerEl && !playerEl.classList.contains("visible")) {
-      playerEl.classList.add("visible");
-    }
-  }
+
 
   function setPlayerVisibility(visible) {
     const playerEl = document.getElementById("background-player");
-    if (!playerEl) return;
-    playerEl.classList.toggle("visible", Boolean(visible));
+    if (!playerEl) return; // Ensure player element exists
+    if (visible) {
+      playerEl.classList.add("visible"); // Fade out overlay, reveal player
+    } else {
+      playerEl.classList.remove("visible"); // Fade in overlay, hide player
+    }
   }
 
   function attemptPlaybackFromGesture(source = "unknown") {
@@ -554,6 +660,13 @@
     if (!player || typeof player.getPlayerState !== "function") {
       console.info("[YouTube Background] Gesture playback: player unavailable", { source });
       log("No player detected");
+      if (!String(source).includes("retry-init")) {
+        checkViewBackgroundConfig().finally(() => {
+          window.setTimeout(() => {
+            attemptPlaybackFromGesture(`${source}:retry-init`);
+          }, 150);
+        });
+      }
       return;
     }
 
@@ -592,7 +705,7 @@
         pendingGesturePlayback = false;
       } else if (typeof player.setPlaybackQuality === "function") {
         console.info("[YouTube Background] Gesture playback: already playing", { source });
-        player.setPlaybackQuality("highres");
+        requestHighresPlayback(player, `attemptPlaybackFromGesture:${source}`);
         log("Request high-resolution playback");
         pendingGesturePlayback = false;
       }
@@ -678,12 +791,97 @@
 
     try {
       pendingGesturePlayback = false;
+      intentionalPauseUntil = Date.now() + 4000;
       player.pauseVideo();
       setPlayerVisibility(false);
       console.info("[YouTube Background] Pause requested", { source });
     } catch (error) {
       console.warn("[YouTube Background] Pause request failed", { source, error });
     }
+  }
+
+  function shouldSkipFocusAction(minIntervalMs = 500) {
+    const now = Date.now();
+    if (now - lastFocusActionAt < minIntervalMs) {
+      return true;
+    }
+    lastFocusActionAt = now;
+    return false;
+  }
+
+  function pausePlaybackFromFocusLoss(source = "focus_loss") {
+    const behavior = getBehavior();
+    if (!window.IDEAS?.yt?.isActive || !behavior.pauseOnFocusLoss) {
+      return;
+    }
+    if (shouldSkipFocusAction()) {
+      return;
+    }
+    pausePlaybackFromEvent(source);
+  }
+
+  function resumePlaybackFromFocusGain(source = "focus_gain") {
+    const behavior = getBehavior();
+    if (!window.IDEAS?.yt?.isActive || !behavior.resumeOnFocusGain) {
+      return;
+    }
+    if (shouldSkipFocusAction()) {
+      return;
+    }
+
+    const player = window.IDEAS?.yt?.player;
+    if (!player || typeof player.getPlayerState !== "function") {
+      return;
+    }
+
+    if (document.visibilityState && document.visibilityState !== "visible") {
+      return;
+    }
+
+    try {
+      const playerState = window.YT?.PlayerState || {};
+      const STATE_PLAYING = typeof playerState.PLAYING === "number" ? playerState.PLAYING : 1;
+      const STATE_ENDED = typeof playerState.ENDED === "number" ? playerState.ENDED : 0;
+      const state = player.getPlayerState();
+      if (state === STATE_PLAYING) {
+        requestHighresPlayback(player, `focus_resume:${source}:already_playing`);
+        return;
+      }
+
+      if (state === STATE_ENDED) {
+        if (behavior.randomize && typeof player.nextVideo === "function") {
+          player.nextVideo();
+        } else if (typeof player.playVideoAt === "function") {
+          player.playVideoAt(0);
+        }
+      }
+
+      if (typeof player.playVideo === "function") {
+        player.playVideo();
+      }
+      requestHighresPlayback(player, `focus_resume:${source}`);
+    } catch (error) {
+      console.warn("[YouTube Background] Resume from focus failed", { source, error });
+    }
+  }
+
+  function installFocusPlaybackHandlers() {
+    if (focusHandlersInstalled) {
+      return;
+    }
+    focusHandlersInstalled = true;
+
+    window.addEventListener("focus", () => resumePlaybackFromFocusGain("window.focus"), true);
+    window.addEventListener("pageshow", () => resumePlaybackFromFocusGain("window.pageshow"), true);
+    window.addEventListener("blur", () => pausePlaybackFromFocusLoss("window.blur"), true);
+
+    document.addEventListener("visibilitychange", () => {
+      if (document.visibilityState === "visible") {
+        resumePlaybackFromFocusGain("document.visible");
+      } else if (document.visibilityState === "hidden") {
+        pausePlaybackFromFocusLoss("document.hidden");
+      }
+    }, true);
   }
 
   function installHomeAssistantPauseActionListener() {
@@ -742,39 +940,97 @@
     };
 
     // Use native dblclick for desktop; it's reliable and intentional
-    if (window.PointerEvent) {
-      window.addEventListener("pointerdown", () => handlePlaybackFromGesture("pointerdown"), true);
-    } else {
-      window.addEventListener("mousedown", () => handlePlaybackFromGesture("mousedown"), true);
-    }
+    const requestHighres = (source = "gesture") => {
+      const player = window.IDEAS?.yt?.player;
+      requestHighresPlayback(player, source);
+    };
 
-    // Native dblclick event: fires reliably on desktop and tablet for intentional double-clicks
-    window.addEventListener("dblclick", handlePlaybackFromDoubleClick, true);
-
-    // Touch events: only use for playback attempt, never for mute toggle
-    window.addEventListener("touchstart", () => {
+    const pointerHandler = () => {
+      handlePlaybackFromGesture("pointerdown");
+      requestHighres("pointerdown");
+    };
+    const mouseHandler = () => {
+      handlePlaybackFromGesture("mousedown");
+      requestHighres("mousedown");
+    };
+    const touchHandler = (event) => {
       handlePlaybackFromGesture("touchstart");
-    }, { capture: true, passive: true });
-
-    // Keyboard: allow Enter/Space for playback, 'm' key for mute
-    window.addEventListener("keydown", (event) => {
+      // On any touch, request highres quality if player is available
+      requestHighres("touchstart");
+    };
+    const keydownHandler = (event) => {
       if (event.key === "Enter" || event.key === " ") {
         handlePlaybackFromGesture("keydown");
       }
       if (event.key.toLowerCase() === "m") {
         toggleMuteFromGesture();
       }
-    }, true);
+    };
+    const bodyPointerHandler = () => {
+      handlePlaybackFromGesture("body.pointerdown");
+      requestHighres("body.pointerdown");
+    };
+    const bodyTouchHandler = () => {
+      handlePlaybackFromGesture("body.touchstart");
+      requestHighres("body.touchstart");
+    };
+
+    if (window.PointerEvent) {
+      window.addEventListener("pointerdown", pointerHandler, true);
+    } else {
+      window.addEventListener("mousedown", mouseHandler, true);
+    }
+
+    // Native dblclick event: fires reliably on desktop and tablet for intentional double-clicks
+    window.addEventListener("dblclick", handlePlaybackFromDoubleClick, true);
+
+    // Touch events: only use for playback attempt, never for mute toggle
+    window.addEventListener("touchstart", touchHandler, { capture: true, passive: true });
+    window.addEventListener("keydown", keydownHandler, true);
 
     const body = document.body;
     if (body) {
-      const bodyPlaybackFallback = (source) => () => handlePlaybackFromGesture(source);
-
       if (window.PointerEvent) {
-        body.addEventListener("pointerdown", bodyPlaybackFallback("body.pointerdown"), { capture: true });
+        body.addEventListener("pointerdown", bodyPointerHandler, { capture: true });
       } else {
-        body.addEventListener("touchstart", bodyPlaybackFallback("body.touchstart"), { capture: true, passive: true });
+        body.addEventListener("touchstart", bodyTouchHandler, { capture: true, passive: true });
       }
+    }
+
+    removeGestureHandlers = () => {
+      if (window.PointerEvent) {
+        window.removeEventListener("pointerdown", pointerHandler, true);
+      } else {
+        window.removeEventListener("mousedown", mouseHandler, true);
+      }
+      window.removeEventListener("dblclick", handlePlaybackFromDoubleClick, true);
+      window.removeEventListener("touchstart", touchHandler, { capture: true });
+      window.removeEventListener("keydown", keydownHandler, true);
+
+      const currentBody = document.body;
+      if (currentBody) {
+        if (window.PointerEvent) {
+          currentBody.removeEventListener("pointerdown", bodyPointerHandler, { capture: true });
+        } else {
+          currentBody.removeEventListener("touchstart", bodyTouchHandler, { capture: true });
+        }
+      }
+    };
+  }
+
+  function teardownGestureHandlers(reason = "runtime") {
+    if (!gestureHandlersInstalled || typeof removeGestureHandlers !== "function") {
+      return;
+    }
+
+    try {
+      removeGestureHandlers();
+      console.info("[YouTube Background] Gesture handlers removed", { reason });
+    } catch (error) {
+      console.warn("[YouTube Background] Failed to remove gesture handlers", { reason, error });
+    } finally {
+      removeGestureHandlers = null;
+      gestureHandlersInstalled = false;
     }
   }
 
@@ -784,6 +1040,9 @@
       player.pauseVideo();
     }
     window.IDEAS.yt.isActive = false;
+    // Always forcibly remove .visible from the container
+    const playerEl = document.getElementById("background-player");
+    if (playerEl) playerEl.classList.remove("visible");
     setPlayerVisibility(false);
   }
 
@@ -853,6 +1112,12 @@
     let ytPlayer = document.getElementById("background-player");
     if (ytPlayer) {
       applySafariNoOpacity(ytPlayer);
+      // Always remove .visible on initial container creation
+      ytPlayer.classList.remove("visible");
+      // Ensure version overlay exists
+      if (!document.getElementById("ytbg-version-overlay")) {
+        addVersionOverlay();
+      }
       return ytPlayer;
     }
 
@@ -861,15 +1126,20 @@
       innerHTML: "<div id='yt-Iframe'></div>"
     });
     applySafariNoOpacity(ytPlayer);
+    // Ensure not visible by default
+    ytPlayer.classList.remove("visible");
     document.body.appendChild(ytPlayer);
 
-    if (!document.getElementById("youtube-background-player-style")) {
-      document.head.appendChild(Object.assign(document.createElement("style"), {
-        id: "youtube-background-player-style",
-        textContent: `
-          div#background-player {
+    // Add version overlay
+    addVersionOverlay();
+
+    const runtimeStyle = document.getElementById("youtube-background-player-style") || Object.assign(document.createElement("style"), {
+      id: "youtube-background-player-style",
+    });
+    runtimeStyle.textContent = `
+          #background-player {
             transition: opacity 0.6s ease-in-out;
-            opacity: 0;
+            opacity: 0; /* Hidden by default until PLAYING */
             position: fixed;
             inset: 0;
             width: 100vw;
@@ -878,14 +1148,18 @@
             pointer-events: none;
             overflow: hidden;
             z-index: 0;
+            background: #000 !important;
           }
           #background-player.visible {
-            opacity: 1;
+            opacity: 1; /* Reveal player while PLAYING */
           }
           #background-player.safari-no-opacity {
-            opacity: 1;
+            opacity: 0 !important;
             visibility: visible !important;
             pointer-events: auto !important;
+          }
+          #background-player.safari-no-opacity.visible {
+            opacity: 1 !important;
           }
           #background-player.safari-no-opacity > #yt-Iframe,
           #background-player.safari-no-opacity iframe {
@@ -894,21 +1168,52 @@
           #background-player.no-transition {
             transition: none;
           }
-          div#background-player::after {
+          #background-player::after {
             content: '';
             background: var(--yt-overlay-gradient, none);
             pointer-events: none;
             position: fixed;
             inset: 0;
           }
-          div#background-player > #yt-Iframe,
-          div#background-player iframe {
+          #background-player > #yt-Iframe,
+          #background-player iframe {
             width: max(100vw, calc(100vh * 16 / 9));
             height: max(100vh, calc(100vw * 9 / 16));
             position: absolute;
             top: 50%;
             left: 50%;
             transform: translate(-50%, -50%);
+          }
+          #ytbg-version-overlay {
+            position: fixed;
+            top: 0;
+            left: 0;
+            z-index: 10000;
+            display: flex;
+            flex-direction: column;
+            gap: 2px;
+            font-family: monospace, monospace;
+            font-size: 15px;
+            color: #fff;
+            background: rgba(0,0,0,0.35);
+            padding: 2px 10px 2px 6px;
+            border-bottom-right-radius: 8px;
+            pointer-events: none;
+            letter-spacing: 0.5px;
+            user-select: none;
+            box-shadow: 0 2px 8px rgba(0,0,0,0.12);
+          }
+          #ytbg-version-overlay .ytbg-version-line {
+            font-size: 15px;
+            line-height: 1.2;
+            font-weight: 600;
+          }
+          #ytbg-version-overlay .ytbg-highres-log {
+            white-space: pre;
+            font-size: 11px;
+            line-height: 1.25;
+            opacity: 0.95;
+            max-width: 72vw;
           }
           body {
             background-color: transparent;
@@ -919,11 +1224,38 @@
             z-index: 1;
             width: 100%;
           }
-      `}));
+      `;
+    if (!runtimeStyle.parentNode) {
+      document.head.appendChild(runtimeStyle);
     }
 
     installGestureHandlers();
     return ytPlayer;
+  }
+
+  function addVersionOverlay() {
+    let overlay = document.getElementById("ytbg-version-overlay");
+    if (!overlay) {
+      overlay = document.createElement("div");
+      overlay.id = "ytbg-version-overlay";
+      document.body.appendChild(overlay);
+    }
+
+    overlay.innerHTML = "";
+
+    const versionLine = document.createElement("div");
+    versionLine.className = "ytbg-version-line";
+    versionLine.textContent = `YTBG v${RUNTIME_LOG_VERSION}`;
+    overlay.appendChild(versionLine);
+
+    if (IS_DEV_BUILD) {
+      const highresLog = document.createElement("div");
+      highresLog.id = "ytbg-highres-log";
+      highresLog.className = "ytbg-highres-log";
+      overlay.appendChild(highresLog);
+    }
+
+    updateHighresOverlay();
   }
 
   function initializeYouTubePlayer() {
@@ -959,7 +1291,19 @@
           const readyBehavior = getBehavior();
           const startIndex = getPlaylistStartIndex(currentId, readyBehavior);
           safariPlaylistRetryCount = 0;
-          log(`Starting playlist ${currentId}`);
+          log(`[YTBG Debug] onReady: Starting playlist ${currentId}`);
+          if (getBehavior().debug) {
+            console.log("[YTBG Debug] onReady event:", {
+              currentId,
+              readyBehavior,
+              startIndex,
+              strictAutoplay,
+              isSafari,
+              isTizen: isTizenBrowser(),
+              isFullyKiosk: isFullyKioskBrowser(),
+              isAndroidWebView: isAndroidWebView(),
+            });
+          }
           ensureInlineIframeAttributes();
           setTimeout(ensureInlineIframeAttributes, 250);
           setTimeout(ensureInlineIframeAttributes, 1200);
@@ -970,6 +1314,8 @@
               startIndex,
               isSafari,
               isTizen: isTizenBrowser(),
+              isFullyKiosk: isFullyKioskBrowser(),
+              isAndroidWebView: isAndroidWebView(),
             });
             deferSafariPlaylistUntilGesture(currentId);
           } else {
@@ -981,9 +1327,7 @@
           if (!strictAutoplay && typeof event.target.setShuffle === "function") {
             event.target.setShuffle(readyBehavior.randomize);
           }
-          if (!strictAutoplay) {
-            event.target.setPlaybackQuality("highres");
-          }
+          // Only set playback quality on PLAYING state, not here
           if (strictAutoplay) {
             if (typeof event.target.mute === "function") {
               event.target.mute();
@@ -997,6 +1341,8 @@
                 playlistId: currentId,
                 isSafari,
                 isTizen: isTizenBrowser(),
+                isFullyKiosk: isFullyKioskBrowser(),
+                isAndroidWebView: isAndroidWebView(),
               });
             } else if (readyBehavior.randomize) {
               scheduleInitialShuffle(event.target, currentId, readyBehavior);
@@ -1009,6 +1355,7 @@
                 try {
                   applyMuteSetting(event.target, readyBehavior);
                   event.target.playVideo();
+                  requestHighresPlayback(event.target, "onReady:pending_gesture_replay");
                   pendingGesturePlayback = false;
                 } catch (error) {
                   console.warn("[YouTube Background] Gesture replay failed", error);
@@ -1027,15 +1374,31 @@
           }
 
           if (event.data === YT.PlayerState.PLAYING) {
+            if (getBehavior().debug) {
+              console.log("[YTBG Debug] onStateChange: PLAYING", {
+                strictAutoplay,
+                stateBehavior,
+              });
+            }
             if (strictAutoplay) {
               safariPlaylistLoaded = true;
               safariDeferredPlaylistId = null;
             }
+            if (isTizenViewOnlyMode()) {
+              teardownGestureHandlers("tizen_view_only_playing");
+            }
             applyMuteSetting(event.target, stateBehavior);
-            showPlayer();
+            requestHighresPlayback(event.target, "onStateChange:PLAYING");
+            setPlayerVisibility(true);
           } else if (event.data === YT.PlayerState.ENDED) {
+            if (getBehavior().debug) {
+              console.log("[YTBG Debug] onStateChange: ENDED", {
+                stateBehavior,
+              });
+            }
+            // Only hide player when stopped/ENDED
+            setPlayerVisibility(false);
             if (stateBehavior.autoplay && window.IDEAS.yt.isActive) {
-              setPlayerVisibility(false);
               if (stateBehavior.randomize) {
                 if (typeof event.target.nextVideo === "function") {
                   event.target.nextVideo();
@@ -1049,7 +1412,25 @@
               hidePlayer();
             }
           } else if (event.data === YT.PlayerState.PAUSED) {
+            if (getBehavior().debug) {
+              console.log("[YTBG Debug] onStateChange: PAUSED", {
+                stateBehavior,
+              });
+            }
+            // Keep overlay hidden on PAUSED; only hide on stopped/non-active states.
+            setPlayerVisibility(true);
+            // Optionally, request highres on pause
+            requestHighresPlayback(event.target, "onStateChange:PAUSED");
+            // Optionally, resume if unexpected pause
             if (!strictAutoplay && stateBehavior.autoplay && window.IDEAS.yt.isActive) {
+              if (Date.now() < intentionalPauseUntil) {
+                log("Skipping auto-resume due to intentional pause");
+                return;
+              }
+              if (document.visibilityState && document.visibilityState !== "visible") {
+                log("Skipping auto-resume while document is not visible");
+                return;
+              }
               log("Resuming from unexpected pause");
               event.target.playVideo();
             }
@@ -1060,8 +1441,14 @@
             event.data !== YT.PlayerState.BUFFERING &&
             event.data !== YT.PlayerState.CUED
           ) {
+            if (getBehavior().debug) {
+              console.log("[YTBG Debug] onStateChange: fallback playVideo", {
+                stateBehavior,
+              });
+            }
+            // Keep hidden during fallback; PLAYING state will reveal.
             setPlayerVisibility(false);
-            event.target.setPlaybackQuality("highres");
+            requestHighresPlayback(event.target, "onStateChange:fallback");
             applyMuteSetting(event.target, stateBehavior);
             event.target.playVideo();
           } else if (!stateBehavior.autoplay) {
@@ -1188,6 +1575,8 @@
 
   function createPlayer(playlistId) {
     const behavior = getBehavior();
+    // Hide player until the iframe reports PLAYING.
+    setPlayerVisibility(false);
 
     if (
       window.IDEAS.yt.player &&
@@ -1355,14 +1744,36 @@
   }
 
   function watchNavigation() {
+    if (isTizenViewOnlyMode()) {
+      console.info("[YouTube Background] Tizen view-only mode: navigation polling disabled");
+      return;
+    }
+
     window.addEventListener("location-changed", () => {
       requestAnimationFrame(() => checkViewBackgroundConfig());
     });
 
     const pollIntervalMs = isStrictAutoplayBrowser() ? 15000 : 3000;
-    setInterval(() => {
+    navigationPollInterval = setInterval(() => {
       checkViewBackgroundConfig();
     }, pollIntervalMs);
+  }
+
+  // Attempt to simulate a user gesture for autoplay in FullyKiosk
+  function simulateUserGestureIfFullyKiosk() {
+    if (!isFullyKioskBrowser()) return;
+    // Try dispatching a click and touch event on the player container
+    const playerEl = document.getElementById("background-player");
+    if (!playerEl) return;
+    // Click event
+    playerEl.dispatchEvent(new MouseEvent("click", { bubbles: true, cancelable: true }));
+    // Touch event
+    playerEl.dispatchEvent(new TouchEvent("touchstart", { bubbles: true, cancelable: true, touches: [{ identifier: 1, target: playerEl, clientX: 1, clientY: 1 }] }));
+    // Also try on the window
+    window.dispatchEvent(new MouseEvent("click", { bubbles: true, cancelable: true }));
+    window.dispatchEvent(new TouchEvent("touchstart", { bubbles: true, cancelable: true, touches: [{ identifier: 1, target: window, clientX: 1, clientY: 1 }] }));
+    // Log for debug
+    log("Simulated user gesture for FullyKiosk autoplay");
   }
 
   function waitForLovelace(timeout = 30000) {
@@ -1371,9 +1782,11 @@
       'background: #555; color: white; border-radius: 999px 0 0 999px; padding: 2px 10px; font-weight: 500;',
       'background: #d9534f; color: white; border-radius: 0 999px 999px 0; padding: 2px 10px; font-weight: 500; margin-left: -4px;'
     );
+    addVersionOverlay();
 
     // Start navigation watcher immediately — the 3s poll will activate once hass is ready
   installLifecycleDiagnostics();
+    installFocusPlaybackHandlers();
     watchNavigation();
     installHomeAssistantPlayActionListener();
     installHomeAssistantPauseActionListener();
@@ -1391,7 +1804,21 @@
     }
 
     tryInit();
+    // Try to trigger autoplay workaround for FullyKiosk
+    setTimeout(simulateUserGestureIfFullyKiosk, 1200);
   }
 
+  // Add document-level click/touch event to request highres playback
+  function installDocumentHighresHandler() {
+    const highresHandler = () => {
+      const player = window.IDEAS?.yt?.player;
+      requestHighresPlayback(player, "document_event");
+    };
+    document.addEventListener("pointerdown", highresHandler, true);
+    document.addEventListener("click", highresHandler, true);
+    document.addEventListener("touchstart", highresHandler, { capture: true, passive: true });
+  }
+
+  installDocumentHighresHandler();
   waitForLovelace();
 })();

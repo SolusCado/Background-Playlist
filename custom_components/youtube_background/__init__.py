@@ -46,7 +46,10 @@ from .const import (
     CONF_ID,
     CONF_MAPPINGS,
     CONF_MUTE,
+    CONF_VOLUME,
+    CONF_PAUSE_ON_FOCUS_LOSS,
     CONF_RANDOMIZE,
+    CONF_RESUME_ON_FOCUS_GAIN,
     EVENT_PAUSE_REQUEST,
     EVENT_PLAY_REQUEST,
     CONF_STATE_MAP,
@@ -83,7 +86,19 @@ def _load_asset_version() -> str:
         return "dev"
 
 
-ASSET_VERSION = _load_asset_version()
+def _load_asset_cache_buster() -> str:
+    """Build a cache buster from manifest version + frontend mtimes."""
+    version = _load_asset_version()
+    root = Path(__file__).parent / "frontend"
+    panel = root / "youtube-background-panel.js"
+    runtime = root / "youtube-background-runtime.js"
+    try:
+        panel_mtime = int(panel.stat().st_mtime)
+        runtime_mtime = int(runtime.stat().st_mtime)
+        return f"{version}-{panel_mtime:x}-{runtime_mtime:x}"
+    except Exception:
+        _LOGGER.debug("Falling back to manifest-only cache buster", exc_info=True)
+        return version
 
 
 class YouTubeBackgroundData:
@@ -196,6 +211,7 @@ async def async_setup(hass: HomeAssistant, config: ConfigType) -> bool:
 async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     """Set up YouTube Background from a config entry."""
     try:
+        asset_buster = _load_asset_cache_buster()
         await _async_register_static_assets(hass)
         _async_remove_existing_panel(hass)
         async_register_built_in_panel(
@@ -208,13 +224,13 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
             config={
                 "_panel_custom": {
                     "name": PANEL_JS,
-                    "js_url": f"{PANEL_STATIC_URL}?v={ASSET_VERSION}",
+                    "js_url": f"{PANEL_STATIC_URL}?v={asset_buster}",
                 }
             },
             update=True,
         )
 
-        add_extra_js_url(hass, f"{RUNTIME_STATIC_URL}?v={ASSET_VERSION}")
+        add_extra_js_url(hass, f"{RUNTIME_STATIC_URL}?v={asset_buster}")
     except Exception:
         _LOGGER.exception("Failed to set up entry for %s", DOMAIN)
         return False
@@ -551,6 +567,12 @@ def _prepare_mapping(mapping: dict[str, Any]) -> dict[str, Any]:
         fade_opacity = 50.0
     fade_opacity = max(0.0, min(100.0, fade_opacity))
 
+    try:
+        volume = float(mapping.get(CONF_VOLUME, 100))
+    except (TypeError, ValueError):
+        volume = 100.0
+    volume = int(max(0.0, min(100.0, volume)))
+
     return {
         CONF_ID: mapping_id,
         CONF_ENABLED: _to_bool(mapping.get(CONF_ENABLED), True),
@@ -562,9 +584,12 @@ def _prepare_mapping(mapping: dict[str, Any]) -> dict[str, Any]:
         CONF_DEFAULT_PLAYLIST_ITEM_COUNT: default_playlist_item_count,
         CONF_STATE_MAP: state_map,
         CONF_MUTE: _to_bool(mapping.get(CONF_MUTE), True),
+        CONF_VOLUME: volume,
         CONF_AUTOPLAY: _to_bool(mapping.get(CONF_AUTOPLAY), True),
         CONF_RANDOMIZE: _to_bool(mapping.get(CONF_RANDOMIZE), True),
-        CONF_TRANSITION: str(mapping.get(CONF_TRANSITION, "fade") or "fade").strip() or "fade",
+        CONF_TRANSITION: "fade",
+        CONF_RESUME_ON_FOCUS_GAIN: True,
+        CONF_PAUSE_ON_FOCUS_LOSS: _to_bool(mapping.get(CONF_PAUSE_ON_FOCUS_LOSS), False),
         CONF_DEBUG: _to_bool(mapping.get(CONF_DEBUG), False),
         CONF_FADE_CORNERS: fade_corners,
         CONF_FADE_COLOR: raw_color,
