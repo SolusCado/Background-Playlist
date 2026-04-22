@@ -161,6 +161,10 @@ The same optional targeting fields apply to `youtube_background.pause`.
 
 ### Release notes
 
+#### `2026.04.22a`
+
+- Production republish of `2026.04.22.1` using a non-DEV runtime version token so debug overlay logging is disabled in normal installs.
+
 #### `2026.04.22.1`
 
 - Restored gesture mute toggling with explicit double-activation detection for both desktop and touch devices.
