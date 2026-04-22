@@ -161,6 +161,14 @@ The same optional targeting fields apply to `youtube_background.pause`.
 
 ### Release notes
 
+#### `2026.04.22`
+
+- Improved Bubble Card backdrop compatibility by switching the scroll-lock selector guard to the current body class (`bubble-body-scroll-locked`), preventing the integration layering rule from overriding Bubble's modal backdrop behavior.
+- Added quality diagnostics in the runtime overlay, including requested quality, current `getPlaybackQuality()`, and available quality levels snapshots.
+- Reworked quality upshift behavior to use stepped escalation based on current playback quality and available tiers.
+- Replaced interaction-triggered quality requests with a periodic quality escalation poller.
+- Updated poller behavior to stop once max available quality is reached, then restart on new `PLAYING` state transitions (new video/resume).
+
 #### `2026.04.13`
 
 - Added a **Duplicate** action on mapping cards so existing mappings can be cloned quickly from the panel.

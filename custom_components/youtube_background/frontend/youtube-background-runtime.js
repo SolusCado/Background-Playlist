@@ -6,7 +6,7 @@
 
   const LOG_PREFIX = "YouTube Background";
   // IMPORTANT: Increment the build number (last digit) on every DEV push!
-  const RUNTIME_LOG_VERSION = "2026.04.20";
+  const RUNTIME_LOG_VERSION = "2026.04.22";
   const IS_DEV_BUILD = /^\d{4}\.\d{2}\.\d{2}\.\d+$/.test(RUNTIME_LOG_VERSION);
   window.IDEAS = window.IDEAS || {};
   window.IDEAS.yt = window.IDEAS.yt || {
@@ -185,6 +185,19 @@
   let intentionalPauseUntil = 0;
   let highresRequestCount = 0;
   let highresRequestLines = [];
+  let qualityPollingInterval = null;
+
+  const QUALITY_RANK = {
+    small: 240,
+    medium: 360,
+    large: 480,
+    hd720: 720,
+    hd1080: 1080,
+    hd1440: 1440,
+    hd2160: 2160,
+    hd2880: 2880,
+    highres: 10000,
+  };
 
   function formatTimeForOverlay(date = new Date()) {
     const pad = (value) => String(value).padStart(2, "0");
@@ -202,20 +215,125 @@
     if (!IS_DEV_BUILD) return;
     highresRequestCount += 1;
     highresRequestLines.push(`#${highresRequestCount} ${formatTimeForOverlay()} ${result} ${source}`);
-    if (highresRequestLines.length > 8) {
-      highresRequestLines = highresRequestLines.slice(-8);
+    if (highresRequestLines.length > 16) {
+      highresRequestLines = highresRequestLines.slice(-16);
     }
     updateHighresOverlay();
   }
 
+  function collectPlaybackQualitySnapshot(player) {
+    if (!player) {
+      return { quality: "n/a", levels: "n/a" };
+    }
+
+    let quality = "n/a";
+    let levels = "n/a";
+
+    if (typeof player.getPlaybackQuality === "function") {
+      try {
+        quality = player.getPlaybackQuality() || "unknown";
+      } catch (error) {
+        quality = "error";
+      }
+    }
+
+    if (typeof player.getAvailableQualityLevels === "function") {
+      try {
+        const available = player.getAvailableQualityLevels();
+        if (Array.isArray(available)) {
+          levels = available.length ? available.join(",") : "none";
+        }
+      } catch (error) {
+        levels = "error";
+      }
+    }
+
+    return { quality, levels };
+  }
+
+  function getQualityRank(level) {
+    const normalized = String(level || "").toLowerCase();
+    return QUALITY_RANK[normalized] || 0;
+  }
+
+  function getHighestAvailableQuality(player) {
+    if (!player || typeof player.getAvailableQualityLevels !== "function") {
+      return null;
+    }
+    try {
+      const levels = player.getAvailableQualityLevels();
+      if (!Array.isArray(levels) || !levels.length) {
+        return null;
+      }
+
+      const sorted = levels
+        .map((level) => String(level || "").trim())
+        .filter(Boolean)
+        .sort((a, b) => getQualityRank(b) - getQualityRank(a));
+
+      return sorted[0] || null;
+    } catch (error) {
+      return null;
+    }
+  }
+
+  function getNextAvailableQualityStep(player) {
+    if (!player || typeof player.getAvailableQualityLevels !== "function") {
+      return null;
+    }
+
+    try {
+      const levels = player.getAvailableQualityLevels();
+      if (!Array.isArray(levels) || !levels.length) {
+        return null;
+      }
+
+      const available = levels
+        .map((level) => String(level || "").trim())
+        .filter(Boolean)
+        .sort((a, b) => getQualityRank(a) - getQualityRank(b));
+
+      const currentQuality = typeof player.getPlaybackQuality === "function"
+        ? String(player.getPlaybackQuality() || "").trim()
+        : "";
+      const currentRank = getQualityRank(currentQuality);
+
+      const next = available.find((level) => getQualityRank(level) > currentRank) || null;
+      if (next) {
+        return { next, currentQuality: currentQuality || "unknown" };
+      }
+
+      return { next: null, currentQuality: currentQuality || "unknown" };
+    } catch (error) {
+      return null;
+    }
+  }
+
+  function logPlaybackQualitySnapshot(player, source, phase) {
+    const snapshot = collectPlaybackQualitySnapshot(player);
+    appendHighresOverlayLine(source, `${phase} q=${snapshot.quality} levels=${snapshot.levels}`);
+  }
+
   function requestHighresPlayback(player, source = "unknown") {
     if (player && typeof player.setPlaybackQuality === "function") {
-      player.setPlaybackQuality("highres");
-      appendHighresOverlayLine(source, "OK");
+      const step = getNextAvailableQualityStep(player);
+      const requestedQuality = step?.next || getHighestAvailableQuality(player) || "highres";
+      if (step && !step.next) {
+        appendHighresOverlayLine(source, `AT_MAX q=${step.currentQuality}`);
+        logPlaybackQualitySnapshot(player, source, "NOW");
+        return false;
+      }
+      player.setPlaybackQuality(requestedQuality);
+      appendHighresOverlayLine(source, `REQ ${requestedQuality}`);
+      logPlaybackQualitySnapshot(player, source, "NOW");
+      window.setTimeout(() => {
+        logPlaybackQualitySnapshot(player, source, "+700ms");
+      }, 700);
       log(`Requested highres quality on ${source}`);
       return true;
     }
-    appendHighresOverlayLine(source, "SKIP");
+    appendHighresOverlayLine(source, "SKIP no_setPlaybackQuality");
+    logPlaybackQualitySnapshot(player, source, "NOW");
     return false;
   }
 
@@ -939,24 +1057,14 @@
       attemptPlaybackFromGesture(source);
     };
 
-    // Use native dblclick for desktop; it's reliable and intentional
-    const requestHighres = (source = "gesture") => {
-      const player = window.IDEAS?.yt?.player;
-      requestHighresPlayback(player, source);
-    };
-
     const pointerHandler = () => {
       handlePlaybackFromGesture("pointerdown");
-      requestHighres("pointerdown");
     };
     const mouseHandler = () => {
       handlePlaybackFromGesture("mousedown");
-      requestHighres("mousedown");
     };
-    const touchHandler = (event) => {
+    const touchHandler = () => {
       handlePlaybackFromGesture("touchstart");
-      // On any touch, request highres quality if player is available
-      requestHighres("touchstart");
     };
     const keydownHandler = (event) => {
       if (event.key === "Enter" || event.key === " ") {
@@ -968,11 +1076,9 @@
     };
     const bodyPointerHandler = () => {
       handlePlaybackFromGesture("body.pointerdown");
-      requestHighres("body.pointerdown");
     };
     const bodyTouchHandler = () => {
       handlePlaybackFromGesture("body.touchstart");
-      requestHighres("body.touchstart");
     };
 
     if (window.PointerEvent) {
@@ -1219,7 +1325,7 @@
             background-color: transparent;
             --view-background: none;
           }
-          html:not(.bubble-html-scroll-locked) body > home-assistant {
+          body:not(.bubble-body-scroll-locked) > home-assistant {
             position: absolute;
             z-index: 1;
             width: 100%;
@@ -1395,6 +1501,7 @@
             if (isTizenViewOnlyMode()) {
               teardownGestureHandlers("tizen_view_only_playing");
             }
+            installQualityEscalationPolling();
             applyMuteSetting(event.target, stateBehavior);
             requestHighresPlayback(event.target, "onStateChange:PLAYING");
             setPlayerVisibility(true);
@@ -1795,6 +1902,7 @@
     // Start navigation watcher immediately — the 3s poll will activate once hass is ready
   installLifecycleDiagnostics();
     installFocusPlaybackHandlers();
+    installQualityEscalationPolling();
     watchNavigation();
     installHomeAssistantPlayActionListener();
     installHomeAssistantPauseActionListener();
@@ -1816,17 +1924,49 @@
     setTimeout(simulateUserGestureIfFullyKiosk, 1200);
   }
 
-  // Add document-level click/touch event to request highres playback
-  function installDocumentHighresHandler() {
-    const highresHandler = () => {
+  function installQualityEscalationPolling() {
+    if (qualityPollingInterval) {
+      return;
+    }
+
+    const poll = () => {
       const player = window.IDEAS?.yt?.player;
-      requestHighresPlayback(player, "document_event");
+      const behavior = getBehavior();
+      if (!player || !window.IDEAS?.yt?.isActive || !behavior.autoplay) {
+        return;
+      }
+      if (typeof player.getPlayerState !== "function") {
+        return;
+      }
+      if (!window.YT?.PlayerState) {
+        return;
+      }
+
+      const state = player.getPlayerState();
+      if (
+        state !== YT.PlayerState.PLAYING &&
+        state !== YT.PlayerState.BUFFERING &&
+        state !== YT.PlayerState.PAUSED
+      ) {
+        return;
+      }
+
+      const step = getNextAvailableQualityStep(player);
+      if (step && !step.next) {
+        if (qualityPollingInterval) {
+          clearInterval(qualityPollingInterval);
+          qualityPollingInterval = null;
+        }
+        appendHighresOverlayLine("quality_poll", `STOP_AT_MAX q=${step.currentQuality}`);
+        return;
+      }
+
+      requestHighresPlayback(player, "quality_poll");
     };
-    document.addEventListener("pointerdown", highresHandler, true);
-    document.addEventListener("click", highresHandler, true);
-    document.addEventListener("touchstart", highresHandler, { capture: true, passive: true });
+
+    poll();
+    qualityPollingInterval = window.setInterval(poll, 3000);
   }
 
-  installDocumentHighresHandler();
   waitForLovelace();
 })();
