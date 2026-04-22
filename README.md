@@ -161,6 +161,12 @@ The same optional targeting fields apply to `youtube_background.pause`.
 
 ### Release notes
 
+#### `2026.04.22b`
+
+- Validated and stabilized the gesture interaction fix on touch devices by preventing duplicate pointer/touch handling from being interpreted as a double activation.
+- Preserves single tap/click playback start while restoring reliable intentional double-tap/double-click mute toggling.
+- Packaged as `2026.04.22b` release artifact for HACS; manifest version remains numeric for Home Assistant compatibility.
+
 #### `2026.04.22a`
 
 - Production republish of `2026.04.22.1` using a non-DEV runtime version token so debug overlay logging is disabled in normal installs.

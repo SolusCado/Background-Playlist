@@ -6,7 +6,7 @@
 
   const LOG_PREFIX = "YouTube Background";
   // IMPORTANT: Increment the build number (last digit) on every DEV push!
-  const RUNTIME_LOG_VERSION = "2026.04.22a";
+  const RUNTIME_LOG_VERSION = "2026.04.22b";
   const IS_DEV_BUILD = /^\d{4}\.\d{2}\.\d{2}\.\d+$/.test(RUNTIME_LOG_VERSION);
   window.IDEAS = window.IDEAS || {};
   window.IDEAS.yt = window.IDEAS.yt || {
@@ -1135,10 +1135,10 @@
       window.addEventListener("pointerdown", pointerHandler, true);
     } else {
       window.addEventListener("mousedown", mouseHandler, true);
+      // Touch fallback path only when Pointer Events are unavailable.
+      window.addEventListener("touchstart", touchHandler, { capture: true, passive: true });
     }
 
-    // Touch events: single tap starts playback; double-tap toggles mute.
-    window.addEventListener("touchstart", touchHandler, { capture: true, passive: true });
     window.addEventListener("keydown", keydownHandler, true);
 
     const body = document.body;
@@ -1155,8 +1155,8 @@
         window.removeEventListener("pointerdown", pointerHandler, true);
       } else {
         window.removeEventListener("mousedown", mouseHandler, true);
+        window.removeEventListener("touchstart", touchHandler, { capture: true });
       }
-      window.removeEventListener("touchstart", touchHandler, { capture: true });
       window.removeEventListener("keydown", keydownHandler, true);
 
       const currentBody = document.body;
