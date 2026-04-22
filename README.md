@@ -161,6 +161,11 @@ The same optional targeting fields apply to `youtube_background.pause`.
 
 ### Release notes
 
+#### `2026.04.22.1`
+
+- Restored gesture mute toggling with explicit double-activation detection for both desktop and touch devices.
+- Added event de-duplication in gesture handlers so overlapping window/body listeners do not produce false double-tap triggers.
+
 #### `2026.04.22`
 
 - Improved Bubble Card backdrop compatibility by switching the scroll-lock selector guard to the current body class (`bubble-body-scroll-locked`), preventing the integration layering rule from overriding Bubble's modal backdrop behavior.

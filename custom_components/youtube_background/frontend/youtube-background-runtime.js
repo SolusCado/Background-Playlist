@@ -6,7 +6,7 @@
 
   const LOG_PREFIX = "YouTube Background";
   // IMPORTANT: Increment the build number (last digit) on every DEV push!
-  const RUNTIME_LOG_VERSION = "2026.04.22";
+  const RUNTIME_LOG_VERSION = "2026.04.22.1";
   const IS_DEV_BUILD = /^\d{4}\.\d{2}\.\d{2}\.\d+$/.test(RUNTIME_LOG_VERSION);
   window.IDEAS = window.IDEAS || {};
   window.IDEAS.yt = window.IDEAS.yt || {
@@ -1048,23 +1048,65 @@
     if (gestureHandlersInstalled) return;
     gestureHandlersInstalled = true;
 
-    const handlePlaybackFromDoubleClick = () => {
-      attemptPlaybackFromGesture("dblclick");
-      toggleMuteFromGesture();
+    let lastGestureTapAt = 0;
+    let lastGestureTapKind = "";
+    let lastEventTimeStamp = -1;
+    let lastEventType = "";
+
+    const isDoubleActivation = (event, kind) => {
+      const ts = Number(event?.timeStamp || 0);
+      const eventType = String(event?.type || "");
+
+      // Avoid treating duplicate callbacks for the same DOM event (window + body handlers) as a double tap.
+      if (ts && ts === lastEventTimeStamp && eventType && eventType === lastEventType) {
+        return false;
+      }
+      if (ts) {
+        lastEventTimeStamp = ts;
+      }
+      if (eventType) {
+        lastEventType = eventType;
+      }
+
+      const now = ts || Date.now();
+      const withinWindowMs = now - lastGestureTapAt <= 360;
+      const sameKind = kind === lastGestureTapKind;
+      const isDouble = withinWindowMs && sameKind;
+
+      if (isDouble) {
+        lastGestureTapAt = 0;
+        lastGestureTapKind = "";
+        return true;
+      }
+
+      lastGestureTapAt = now;
+      lastGestureTapKind = kind;
+      return false;
     };
 
     const handlePlaybackFromGesture = (source = "gesture") => {
       attemptPlaybackFromGesture(source);
     };
 
-    const pointerHandler = () => {
+    const pointerHandler = (event) => {
       handlePlaybackFromGesture("pointerdown");
+      const pointerType = String(event?.pointerType || "").toLowerCase();
+      const kind = pointerType === "touch" ? "touch" : "mouse";
+      if (isDoubleActivation(event, kind)) {
+        toggleMuteFromGesture();
+      }
     };
-    const mouseHandler = () => {
+    const mouseHandler = (event) => {
       handlePlaybackFromGesture("mousedown");
+      if (isDoubleActivation(event, "mouse")) {
+        toggleMuteFromGesture();
+      }
     };
-    const touchHandler = () => {
+    const touchHandler = (event) => {
       handlePlaybackFromGesture("touchstart");
+      if (isDoubleActivation(event, "touch")) {
+        toggleMuteFromGesture();
+      }
     };
     const keydownHandler = (event) => {
       if (event.key === "Enter" || event.key === " ") {
@@ -1074,11 +1116,19 @@
         toggleMuteFromGesture();
       }
     };
-    const bodyPointerHandler = () => {
+    const bodyPointerHandler = (event) => {
       handlePlaybackFromGesture("body.pointerdown");
+      const pointerType = String(event?.pointerType || "").toLowerCase();
+      const kind = pointerType === "touch" ? "touch" : "mouse";
+      if (isDoubleActivation(event, kind)) {
+        toggleMuteFromGesture();
+      }
     };
-    const bodyTouchHandler = () => {
+    const bodyTouchHandler = (event) => {
       handlePlaybackFromGesture("body.touchstart");
+      if (isDoubleActivation(event, "touch")) {
+        toggleMuteFromGesture();
+      }
     };
 
     if (window.PointerEvent) {
@@ -1087,10 +1137,7 @@
       window.addEventListener("mousedown", mouseHandler, true);
     }
 
-    // Native dblclick event: fires reliably on desktop and tablet for intentional double-clicks
-    window.addEventListener("dblclick", handlePlaybackFromDoubleClick, true);
-
-    // Touch events: only use for playback attempt, never for mute toggle
+    // Touch events: single tap starts playback; double-tap toggles mute.
     window.addEventListener("touchstart", touchHandler, { capture: true, passive: true });
     window.addEventListener("keydown", keydownHandler, true);
 
@@ -1109,7 +1156,6 @@
       } else {
         window.removeEventListener("mousedown", mouseHandler, true);
       }
-      window.removeEventListener("dblclick", handlePlaybackFromDoubleClick, true);
       window.removeEventListener("touchstart", touchHandler, { capture: true });
       window.removeEventListener("keydown", keydownHandler, true);
 
