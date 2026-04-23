@@ -161,6 +161,16 @@ The same optional targeting fields apply to `youtube_background.pause`.
 
 ### Release notes
 
+#### `2026.04.23`
+
+- Added a per-dashboard **Max Resolution** option in the configuration panel, and updated runtime quality escalation to stop at the lower of:
+  - highest quality available from YouTube for the current video/client, and
+  - configured dashboard max resolution cap.
+- Disabled background playback while Lovelace dashboard **Edit mode** is active.
+- Prevented direct pointer interaction with the YouTube iframe so incidental on-screen YouTube controls no longer appear.
+- Improved playback stability by reducing fallback resume churn and restoring autoplay behavior for Tizen dashboards.
+- Updated DEV overlay behavior to auto-fade after 10 seconds.
+
 #### `2026.04.22b`
 
 - Validated and stabilized the gesture interaction fix on touch devices by preventing duplicate pointer/touch handling from being interpreted as a double activation.

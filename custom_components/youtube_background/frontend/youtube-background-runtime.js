@@ -6,7 +6,7 @@
 
   const LOG_PREFIX = "YouTube Background";
   // IMPORTANT: Increment the build number (last digit) on every DEV push!
-  const RUNTIME_LOG_VERSION = "2026.04.22b";
+  const RUNTIME_LOG_VERSION = "2026.04.23";
   const IS_DEV_BUILD = /^\d{4}\.\d{2}\.\d{2}\.\d+$/.test(RUNTIME_LOG_VERSION);
   window.IDEAS = window.IDEAS || {};
   window.IDEAS.yt = window.IDEAS.yt || {
@@ -33,12 +33,32 @@
     return Math.max(0, Math.min(100, Math.round(numeric)));
   }
 
+  function normalizeMaxResolution(value, defaultValue = "") {
+    const normalized = String(value || "").trim().toLowerCase();
+    if (!normalized || ["auto", "none", "off"].includes(normalized)) {
+      return "";
+    }
+    const allowed = new Set([
+      "small",
+      "medium",
+      "large",
+      "hd720",
+      "hd1080",
+      "hd1440",
+      "hd2160",
+      "hd2880",
+      "highres",
+    ]);
+    return allowed.has(normalized) ? normalized : defaultValue;
+  }
+
   function getBehavior(config = currentConfig) {
     return {
       mute: toBoolean(config?.mute, true),
       volume: normalizeVolume(config?.volume, 100),
       autoplay: toBoolean(config?.autoplay, true),
       randomize: toBoolean(config?.randomize, true),
+      maxResolution: normalizeMaxResolution(config?.max_resolution, ""),
       resumeOnFocusGain: true,
       pauseOnFocusLoss: toBoolean(config?.pause_on_focus_loss, false),
       transition: "fade",
@@ -183,14 +203,18 @@
   let focusHandlersInstalled = false;
   let lastFocusActionAt = 0;
   let intentionalPauseUntil = 0;
+  let lastFallbackResumeAt = 0;
   let highresRequestCount = 0;
   let highresRequestLines = [];
   let qualityPollingInterval = null;
+  let overlayFadeTimer = null;
 
   const QUALITY_RANK = {
     small: 240,
     medium: 360,
     large: 480,
+    tiny: 144,
+    auto: 0,
     hd720: 720,
     hd1080: 1080,
     hd1440: 1440,
@@ -219,6 +243,22 @@
       highresRequestLines = highresRequestLines.slice(-16);
     }
     updateHighresOverlay();
+  }
+
+  function showOverlayTemporarily() {
+    if (!IS_DEV_BUILD) return;
+    const overlay = document.getElementById("ytbg-version-overlay");
+    if (!overlay) return;
+
+    overlay.classList.remove("ytbg-overlay-hidden");
+
+    if (overlayFadeTimer) {
+      clearTimeout(overlayFadeTimer);
+    }
+
+    overlayFadeTimer = window.setTimeout(() => {
+      overlay.classList.add("ytbg-overlay-hidden");
+    }, 10000);
   }
 
   function collectPlaybackQualitySnapshot(player) {
@@ -256,12 +296,42 @@
     return QUALITY_RANK[normalized] || 0;
   }
 
-  function getHighestAvailableQuality(player) {
+  function getCappedAvailableLevels(player, maxResolution = "") {
+    if (!player || typeof player.getAvailableQualityLevels !== "function") {
+      return [];
+    }
+    try {
+      const levels = player.getAvailableQualityLevels();
+      if (!Array.isArray(levels) || !levels.length) {
+        return [];
+      }
+
+      const normalized = levels
+        .map((level) => String(level || "").trim().toLowerCase())
+        .filter(Boolean);
+
+      const maxRank = getQualityRank(maxResolution);
+      if (!maxResolution || maxRank <= 0) {
+        return normalized;
+      }
+
+      const filtered = normalized.filter((level) => {
+        const rank = getQualityRank(level);
+        return rank > 0 && rank <= maxRank;
+      });
+
+      return filtered.length ? filtered : normalized;
+    } catch (error) {
+      return [];
+    }
+  }
+
+  function getHighestAvailableQuality(player, maxResolution = "") {
     if (!player || typeof player.getAvailableQualityLevels !== "function") {
       return null;
     }
     try {
-      const levels = player.getAvailableQualityLevels();
+      const levels = getCappedAvailableLevels(player, maxResolution);
       if (!Array.isArray(levels) || !levels.length) {
         return null;
       }
@@ -283,7 +353,8 @@
     }
 
     try {
-      const levels = player.getAvailableQualityLevels();
+      const behavior = getBehavior();
+      const levels = getCappedAvailableLevels(player, behavior.maxResolution);
       if (!Array.isArray(levels) || !levels.length) {
         return null;
       }
@@ -316,10 +387,12 @@
 
   function requestHighresPlayback(player, source = "unknown") {
     if (player && typeof player.setPlaybackQuality === "function") {
+      const behavior = getBehavior();
+      const configuredMax = behavior.maxResolution;
       const step = getNextAvailableQualityStep(player);
-      const requestedQuality = step?.next || getHighestAvailableQuality(player) || "highres";
+      const requestedQuality = step?.next || getHighestAvailableQuality(player, configuredMax) || configuredMax || "highres";
       if (step && !step.next) {
-        appendHighresOverlayLine(source, `AT_MAX q=${step.currentQuality}`);
+        appendHighresOverlayLine(source, `AT_MAX q=${step.currentQuality}${configuredMax ? ` cap=${configuredMax}` : ""}`);
         logPlaybackQualitySnapshot(player, source, "NOW");
         return false;
       }
@@ -372,7 +445,14 @@
       }
       return false;
     }
-    const strict = isSafariBrowser() || isTizenBrowser() || isAndroidWebView();
+    // Tizen should not use strict deferral; we want autoplay on TV dashboards.
+    if (isTizenBrowser()) {
+      if (getBehavior().debug) {
+        console.log("[YTBG Debug] isTizenBrowser: true (bypassing strict autoplay)");
+      }
+      return false;
+    }
+    const strict = isSafariBrowser() || isAndroidWebView();
     if (getBehavior().debug) {
       console.log("[YTBG Debug] User Agent:", ua);
       console.log("[YTBG Debug] isSafariBrowser:", isSafariBrowser());
@@ -602,6 +682,7 @@
       volume: config.volume ?? null,
       autoplay: config.autoplay ?? null,
       randomize: config.randomize ?? null,
+      max_resolution: config.max_resolution ?? null,
       resume_on_focus_gain: config.resume_on_focus_gain ?? null,
       pause_on_focus_loss: config.pause_on_focus_loss ?? null,
       transition: config.transition ?? null,
@@ -708,6 +789,30 @@
     return views.find(v => v.path === viewId);
   }
 
+  function isDashboardEditMode() {
+    try {
+      const url = new URL(window.location.href);
+      const editParam = (url.searchParams.get("edit") || "").trim().toLowerCase();
+      if (["1", "true", "on", "yes"].includes(editParam)) {
+        return true;
+      }
+    } catch (_error) {
+      // Ignore URL parsing errors and fall through to structural checks.
+    }
+
+    const root = getLovelaceRoot();
+    if (!root) {
+      return false;
+    }
+
+    // HA has used different flags across frontend versions; check common variants.
+    if (root?.lovelace?.editMode === true) return true;
+    if (root?.editMode === true) return true;
+    if (root?.__editMode === true) return true;
+    if (root?.classList?.contains("edit-mode")) return true;
+    return false;
+  }
+
   async function getConfigForCurrentView() {
     if (!isDashboardRoute()) {
       return null;
@@ -771,6 +876,13 @@
   }
 
   function attemptPlaybackFromGesture(source = "unknown") {
+    if (!window.IDEAS?.yt?.isActive) {
+      if (getBehavior().debug) {
+        console.info("[YouTube Background] Gesture playback ignored while inactive", { source });
+      }
+      return;
+    }
+
     pendingGesturePlayback = true;
     safariGestureUnlocked = true;
 
@@ -1258,7 +1370,7 @@
       if (!element || !isSafariBrowser()) return;
       element.classList.add("safari-no-opacity");
       element.style.setProperty("opacity", "1", "important");
-      element.style.setProperty("pointer-events", "auto", "important");
+      element.style.setProperty("pointer-events", "none", "important");
     };
 
     let ytPlayer = document.getElementById("background-player");
@@ -1308,14 +1420,14 @@
           #background-player.safari-no-opacity {
             opacity: 0 !important;
             visibility: visible !important;
-            pointer-events: auto !important;
+            pointer-events: none !important;
           }
           #background-player.safari-no-opacity.visible {
             opacity: 1 !important;
           }
           #background-player.safari-no-opacity > #yt-Iframe,
           #background-player.safari-no-opacity iframe {
-            pointer-events: auto !important;
+            pointer-events: none !important;
           }
           #background-player.no-transition {
             transition: none;
@@ -1354,6 +1466,11 @@
             letter-spacing: 0.5px;
             user-select: none;
             box-shadow: 0 2px 8px rgba(0,0,0,0.12);
+            opacity: 1;
+            transition: opacity 0.6s ease;
+          }
+          #ytbg-version-overlay.ytbg-overlay-hidden {
+            opacity: 0;
           }
           #ytbg-version-overlay .ytbg-version-line {
             font-size: 15px;
@@ -1416,6 +1533,7 @@
     }
 
     updateHighresOverlay();
+    showOverlayTemporarily();
   }
 
   function initializeYouTubePlayer() {
@@ -1576,12 +1694,15 @@
             if (getBehavior().debug) {
               console.log("[YTBG Debug] onStateChange: PAUSED", {
                 stateBehavior,
+                isActive: window.IDEAS?.yt?.isActive,
               });
             }
-            // Keep overlay hidden on PAUSED; only hide on stopped/non-active states.
+            if (!window.IDEAS?.yt?.isActive) {
+              setPlayerVisibility(false);
+              return;
+            }
+            // Keep overlay hidden on PAUSED for active playback contexts.
             setPlayerVisibility(true);
-            // Optionally, request highres on pause
-            requestHighresPlayback(event.target, "onStateChange:PAUSED");
             // Optionally, resume if unexpected pause
             if (!strictAutoplay && stateBehavior.autoplay && window.IDEAS.yt.isActive) {
               if (Date.now() < intentionalPauseUntil) {
@@ -1607,9 +1728,18 @@
                 stateBehavior,
               });
             }
+            const now = Date.now();
+            if (now - lastFallbackResumeAt < 2000) {
+              if (stateBehavior.debug) {
+                console.log("[YTBG Debug] onStateChange: fallback throttled", {
+                  elapsedMs: now - lastFallbackResumeAt,
+                });
+              }
+              return;
+            }
+            lastFallbackResumeAt = now;
             // Keep hidden during fallback; PLAYING state will reveal.
             setPlayerVisibility(false);
-            requestHighresPlayback(event.target, "onStateChange:fallback");
             applyMuteSetting(event.target, stateBehavior);
             event.target.playVideo();
           } else if (!stateBehavior.autoplay) {
@@ -1875,6 +2005,12 @@
       return;
     }
 
+    if (isDashboardEditMode()) {
+      window.IDEAS.yt.isActive = false;
+      hidePlayer();
+      return;
+    }
+
     const viewId = getCurrentViewIdFromUrl();
     if (!viewId) return;
 
@@ -1885,19 +2021,22 @@
 
     const config = await getConfigForCurrentView();
     const nextConfigSignature = getConfigSignature(config);
-    const configChanged = nextConfigSignature !== currentConfigSignature;
     currentConfig = config;
     currentConfigSignature = nextConfigSignature;
 
     const hass = getHass();
     const resolved = resolvePlaylistId(config, hass);
-    const stateChanged = (resolved?.key || null) !== lastResolvedState;
+    const resolvedPlaylistId = String(resolved?.playlistId || "").trim();
+    const currentPlaylistId = String(window.IDEAS?.yt?.currentPlaylistId || "").trim();
+    const playlistChanged = resolvedPlaylistId !== currentPlaylistId;
+    const shouldResumeInactive = Boolean(resolvedPlaylistId) && !window.IDEAS?.yt?.isActive;
 
-    if (configChanged || stateChanged) {
+    if (playlistChanged || shouldResumeInactive) {
       console.info("[YouTube Background] Config refresh", {
-        configChanged,
-        stateChanged,
-        playlistId: resolved?.playlistId ?? null,
+        playlistChanged,
+        shouldResumeInactive,
+        playlistId: resolvedPlaylistId || null,
+        currentPlaylistId: currentPlaylistId || null,
         stateKey: resolved?.key ?? null,
       });
       handleConfigChange(config);

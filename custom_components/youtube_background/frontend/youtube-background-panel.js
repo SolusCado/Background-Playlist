@@ -70,6 +70,25 @@ class YouTubeBackgroundPanel extends HTMLElement {
     return Math.max(0, Math.min(100, Math.round(parsed)));
   }
 
+  _normalizeMaxResolution(value, defaultValue = "") {
+    const normalized = String(value || "").trim().toLowerCase();
+    if (!normalized || ["auto", "none", "off"].includes(normalized)) {
+      return "";
+    }
+    const allowed = new Set([
+      "small",
+      "medium",
+      "large",
+      "hd720",
+      "hd1080",
+      "hd1440",
+      "hd2160",
+      "hd2880",
+      "highres",
+    ]);
+    return allowed.has(normalized) ? normalized : defaultValue;
+  }
+
   async _loadInitialData() {
     await Promise.all([this._loadMappings(), this._loadDashboards(), this._loadYouTubeApiStatus()]);
     this._entityOptions = Object.keys(this._hass?.states || {}).sort();
@@ -138,6 +157,7 @@ class YouTubeBackgroundPanel extends HTMLElement {
         volume: this._normalizeVolume(mapping.volume, 100),
         autoplay: this._toBoolean(mapping.autoplay, true),
         randomize: this._toBoolean(mapping.randomize, true),
+        max_resolution: this._normalizeMaxResolution(mapping.max_resolution, ""),
         resume_on_focus_gain: true,
         pause_on_focus_loss: this._toBoolean(mapping.pause_on_focus_loss, false),
         transition: "fade",
@@ -276,6 +296,7 @@ class YouTubeBackgroundPanel extends HTMLElement {
       volume: 100,
       autoplay: true,
       randomize: true,
+      max_resolution: "",
       resume_on_focus_gain: true,
       pause_on_focus_loss: false,
       transition: "fade",
@@ -995,6 +1016,7 @@ class YouTubeBackgroundPanel extends HTMLElement {
       volume: this._normalizeVolume(mapping.volume, 100),
       autoplay: this._toBoolean(mapping.autoplay, true),
       randomize: this._toBoolean(mapping.randomize, true),
+      max_resolution: this._normalizeMaxResolution(mapping.max_resolution, ""),
       resume_on_focus_gain: true,
       pause_on_focus_loss: this._toBoolean(mapping.pause_on_focus_loss, false),
       transition: "fade",
@@ -1462,6 +1484,22 @@ class YouTubeBackgroundPanel extends HTMLElement {
                 <div class="volume-input-row">
                   <input type="text" inputmode="numeric" value="${this._normalizeVolume(mapping.volume, 100)}" data-field="volume" data-mapping-id="${mapping.id}" />
                   <span class="fade-opacity-suffix">%</span>
+                </div>
+              </div>
+              <div class="volume-option">
+                <span>Max Resolution</span>
+                <div class="volume-input-row">
+                  <select data-field="max_resolution" data-mapping-id="${mapping.id}">
+                    <option value="" ${!this._normalizeMaxResolution(mapping.max_resolution, "") ? "selected" : ""}>Auto (Highest)</option>
+                    <option value="hd2880" ${this._normalizeMaxResolution(mapping.max_resolution, "") === "hd2880" ? "selected" : ""}>HD 2880p</option>
+                    <option value="hd2160" ${this._normalizeMaxResolution(mapping.max_resolution, "") === "hd2160" ? "selected" : ""}>HD 2160p (4K)</option>
+                    <option value="hd1440" ${this._normalizeMaxResolution(mapping.max_resolution, "") === "hd1440" ? "selected" : ""}>HD 1440p</option>
+                    <option value="hd1080" ${this._normalizeMaxResolution(mapping.max_resolution, "") === "hd1080" ? "selected" : ""}>HD 1080p</option>
+                    <option value="hd720" ${this._normalizeMaxResolution(mapping.max_resolution, "") === "hd720" ? "selected" : ""}>HD 720p</option>
+                    <option value="large" ${this._normalizeMaxResolution(mapping.max_resolution, "") === "large" ? "selected" : ""}>Large (480p)</option>
+                    <option value="medium" ${this._normalizeMaxResolution(mapping.max_resolution, "") === "medium" ? "selected" : ""}>Medium (360p)</option>
+                    <option value="small" ${this._normalizeMaxResolution(mapping.max_resolution, "") === "small" ? "selected" : ""}>Small (240p)</option>
+                  </select>
                 </div>
               </div>
             </div>

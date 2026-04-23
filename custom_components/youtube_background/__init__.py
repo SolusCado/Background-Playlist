@@ -45,6 +45,7 @@ from .const import (
     CONF_FADE_OPACITY,
     CONF_ID,
     CONF_MAPPINGS,
+    CONF_MAX_RESOLUTION,
     CONF_MUTE,
     CONF_VOLUME,
     CONF_PAUSE_ON_FOCUS_LOSS,
@@ -573,6 +574,24 @@ def _prepare_mapping(mapping: dict[str, Any]) -> dict[str, Any]:
         volume = 100.0
     volume = int(max(0.0, min(100.0, volume)))
 
+    allowed_max_resolutions = {
+        "",
+        "small",
+        "medium",
+        "large",
+        "hd720",
+        "hd1080",
+        "hd1440",
+        "hd2160",
+        "hd2880",
+        "highres",
+    }
+    max_resolution = str(mapping.get(CONF_MAX_RESOLUTION, "") or "").strip().lower()
+    if max_resolution in {"auto", "none", "off"}:
+        max_resolution = ""
+    if max_resolution not in allowed_max_resolutions:
+        max_resolution = ""
+
     return {
         CONF_ID: mapping_id,
         CONF_ENABLED: _to_bool(mapping.get(CONF_ENABLED), True),
@@ -587,6 +606,7 @@ def _prepare_mapping(mapping: dict[str, Any]) -> dict[str, Any]:
         CONF_VOLUME: volume,
         CONF_AUTOPLAY: _to_bool(mapping.get(CONF_AUTOPLAY), True),
         CONF_RANDOMIZE: _to_bool(mapping.get(CONF_RANDOMIZE), True),
+        CONF_MAX_RESOLUTION: max_resolution,
         CONF_TRANSITION: "fade",
         CONF_RESUME_ON_FOCUS_GAIN: True,
         CONF_PAUSE_ON_FOCUS_LOSS: _to_bool(mapping.get(CONF_PAUSE_ON_FOCUS_LOSS), False),
