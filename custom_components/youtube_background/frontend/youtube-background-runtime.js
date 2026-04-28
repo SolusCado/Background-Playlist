@@ -6,13 +6,12 @@
 
   const LOG_PREFIX = "YouTube Background";
   // IMPORTANT: Increment the build number (last digit) on every DEV push!
-  const RUNTIME_LOG_VERSION = "2026.04.23";
+  const RUNTIME_LOG_VERSION = "2026.04.28";
   const IS_DEV_BUILD = /^\d{4}\.\d{2}\.\d{2}\.\d+$/.test(RUNTIME_LOG_VERSION);
   window.IDEAS = window.IDEAS || {};
   window.IDEAS.yt = window.IDEAS.yt || {
     currentPlaylistId: null,
-    player: null,
-    pendingShufflePlaylistId: null
+    player: null
   };
 
   function toBoolean(value, defaultValue) {
@@ -1310,61 +1309,6 @@
     setPlayerVisibility(false);
   }
 
-  function scheduleInitialShuffle(player, playlistId, behavior) {
-    if (!player || !behavior?.randomize) {
-      window.IDEAS.yt.pendingShufflePlaylistId = null;
-      return;
-    }
-
-    window.IDEAS.yt.pendingShufflePlaylistId = playlistId;
-    let attemptsRemaining = 10;
-
-    const tryRandomStart = () => {
-      if (
-        window.IDEAS?.yt?.pendingShufflePlaylistId !== playlistId ||
-        window.IDEAS?.yt?.currentPlaylistId !== playlistId
-      ) {
-        return;
-      }
-
-      try {
-        if (typeof player.setShuffle === "function") {
-          player.setShuffle(true);
-        }
-
-        const playlistEntries = typeof player.getPlaylist === "function" ? player.getPlaylist() : null;
-        const playlistLength = Array.isArray(playlistEntries) ? playlistEntries.length : 0;
-
-        if (playlistLength > 1 && typeof player.playVideoAt === "function") {
-          const randomIndex = Math.floor(Math.random() * playlistLength);
-          player.playVideoAt(randomIndex);
-        } else if (playlistLength === 1 && typeof player.playVideoAt === "function") {
-          player.playVideoAt(0);
-        } else if (attemptsRemaining > 0) {
-          attemptsRemaining -= 1;
-          window.setTimeout(tryRandomStart, 200);
-          return;
-        } else if (typeof player.nextVideo === "function") {
-          player.nextVideo();
-        } else {
-          player.playVideo();
-        }
-
-        if (behavior.autoplay) {
-          player.playVideo();
-        }
-      } catch (error) {
-        log("Initial shuffle start failed", error);
-      } finally {
-        if (window.IDEAS?.yt?.pendingShufflePlaylistId === playlistId) {
-          window.IDEAS.yt.pendingShufflePlaylistId = null;
-        }
-      }
-    };
-
-    window.setTimeout(tryRandomStart, 700);
-  }
-
   function ensurePlayerContainer() {
     const applySafariNoOpacity = (element) => {
       if (!element || !isSafariBrowser()) return;
@@ -1622,8 +1566,6 @@
                 isFullyKiosk: isFullyKioskBrowser(),
                 isAndroidWebView: isAndroidWebView(),
               });
-            } else if (readyBehavior.randomize) {
-              scheduleInitialShuffle(event.target, currentId, readyBehavior);
             } else {
               event.target.playVideo();
             }
@@ -1866,8 +1808,6 @@
 
   function createPlayer(playlistId) {
     const behavior = getBehavior();
-    // Hide player until the iframe reports PLAYING.
-    setPlayerVisibility(false);
 
     if (
       window.IDEAS.yt.player &&
@@ -1884,12 +1824,19 @@
       if (behavior.autoplay) {
         if (strictAutoplay) {
           deferSafariPlaylistUntilGesture(playlistId);
-        } else if (behavior.randomize) {
-          scheduleInitialShuffle(window.IDEAS.yt.player, playlistId, behavior);
-        } else if (typeof window.IDEAS.yt.player.playVideoAt === "function") {
-          window.IDEAS.yt.player.playVideoAt(0);
-        } else {
-          window.IDEAS.yt.player.playVideo();
+        } else if (typeof window.IDEAS.yt.player.playVideo === "function") {
+          const playerState = window.YT?.PlayerState || {};
+          const playingState = typeof playerState.PLAYING === "number" ? playerState.PLAYING : 1;
+          const bufferingState = typeof playerState.BUFFERING === "number" ? playerState.BUFFERING : 3;
+          let state = null;
+          try {
+            state = window.IDEAS.yt.player.getPlayerState();
+          } catch (error) {
+            log("Failed to read player state before resume", error);
+          }
+          if (state !== playingState && state !== bufferingState) {
+            window.IDEAS.yt.player.playVideo();
+          }
         }
       } else {
         hidePlayer();
@@ -1904,8 +1851,10 @@
     ) {
       const strictAutoplay = isStrictAutoplayBrowser();
       log(`Switching to playlist ${playlistId}`);
+      // Hide player until the newly loaded playlist reports PLAYING.
+      setPlayerVisibility(false);
+      window.IDEAS.yt.currentPlaylistId = playlistId;
       if (strictAutoplay) {
-        window.IDEAS.yt.currentPlaylistId = playlistId;
         deferSafariPlaylistUntilGesture(playlistId);
       } else {
         loadPlaylistForPlayer(window.IDEAS.yt.player, playlistId, behavior, {
@@ -1925,8 +1874,6 @@
             isSafari: isSafariBrowser(),
             isTizen: isTizenBrowser(),
           });
-        } else if (behavior.randomize) {
-          scheduleInitialShuffle(window.IDEAS.yt.player, playlistId, behavior);
         } else {
           window.IDEAS.yt.player.playVideo();
         }
@@ -1938,6 +1885,8 @@
 
     window.IDEAS.yt.currentPlaylistId = playlistId;
     window.onYouTubeIframeAPIReady = initializeYouTubePlayer;
+    // Hide player until the initial playlist reports PLAYING.
+    setPlayerVisibility(false);
     ensurePlayerContainer();
 
     if (!document.querySelector('script[src*="youtube.com/iframe_api"]')) {
