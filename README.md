@@ -161,6 +161,11 @@ The same optional targeting fields apply to `youtube_background.pause`.
 
 ### Release notes
 
+#### `2026.05.18`
+
+- Published a current dated HACS package for the latest integration build.
+- Added fresh Desktop Kiosk macOS release assets for universal, Apple Silicon, and Intel builds with matching SHA-256 checksums.
+
 #### `2026.04.23`
 
 - Added a per-dashboard **Max Resolution** option in the configuration panel, and updated runtime quality escalation to stop at the lower of:

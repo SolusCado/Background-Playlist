@@ -6,7 +6,7 @@
 
   const LOG_PREFIX = "YouTube Background";
   // IMPORTANT: Increment the build number (last digit) on every DEV push!
-  const RUNTIME_LOG_VERSION = "2026.04.28";
+  const RUNTIME_LOG_VERSION = "2026.05.18";
   const IS_DEV_BUILD = /^\d{4}\.\d{2}\.\d{2}\.\d+$/.test(RUNTIME_LOG_VERSION);
   window.IDEAS = window.IDEAS || {};
   window.IDEAS.yt = window.IDEAS.yt || {
